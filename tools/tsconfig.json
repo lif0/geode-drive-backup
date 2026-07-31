@@ -1,0 +1,13 @@
+{
+  // Plain .mjs scripts with no build step. checkJs still type-checks them in CI,
+  // because the recovery decryptor has to work when the plugin doesn't.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "target": "es2022",
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": ["**/*.mjs"]
+}

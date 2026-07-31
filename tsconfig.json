@@ -1,0 +1,9 @@
+{
+  // `types: []` keeps @types/node out of src/, so Buffer, process and require
+  // fail to compile here. That is the mobile constraint, enforced by tsc.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}

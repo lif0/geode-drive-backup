@@ -1,0 +1,9 @@
+{
+  // Tests plus the pure core they exercise. Both run in plain Node under Vitest.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["DOM", "ES2018"]
+  },
+  "include": ["**/*.ts", "../src/core/**/*.ts"]
+}

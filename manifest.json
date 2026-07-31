@@ -1,0 +1,10 @@
+{
+  "id": "geode-drive-backup",
+  "name": "Geode",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Backup, not sync. Push changed notes to your own Google Drive and pull the whole vault back on a new device, with optional client-side encryption.",
+  "author": "Geode contributors",
+  "authorUrl": "https://github.com/geode-drive-backup/geode-drive-backup",
+  "isDesktopOnly": false
+}

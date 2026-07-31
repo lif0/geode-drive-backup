@@ -1,3 +1,10 @@
+# Build output, shipped in releases only
+main.js
+main.js.map
+
+# Settings, local index and the Google refresh token
+data.json
+
 # Logs
 logs
 *.log

@@ -1,0 +1,9 @@
+# Build output
+main.js
+main.js.map
+
+# Generated / lockfiles
+package-lock.json
+
+# Golden crypto vectors are generated, byte-exact, and must never be reflowed.
+test/vectors.json

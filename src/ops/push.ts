@@ -7,6 +7,7 @@ import type { DriveClient, GeodeAppProperties } from '../drive/client';
 import type { GeodeSettings } from '../settings';
 import type {
   Bytes,
+  CancellationToken,
   CryptoProvider,
   DriveFileId,
   LocalFile,
@@ -38,6 +39,7 @@ export interface PushDeps {
   readonly keys: KeyCache;
   readonly progress: ProgressReporter;
   readonly settings: GeodeSettings;
+  readonly cancellation: CancellationToken;
   /**
    * Asks the user for the passphrase. `isNewVault` is true when no `__keycheck`
    * exists yet, so the prompt can ask twice and warn that there is no recovery.
@@ -47,6 +49,16 @@ export interface PushDeps {
   /** Caches the folder id in settings so the next run skips the lookup. */
   readonly rememberFolderId: (id: DriveFileId) => Promise<void>;
 }
+
+/**
+ * How many files may be processed before the index is written again.
+ *
+ * The index used to be saved only at the very end. Quitting Obsidian mid-run
+ * then left files on Drive with no index entry, and the next push reported every
+ * one of them as a conflict. Saving as we go turns an interrupted run into one
+ * that simply resumes.
+ */
+const INDEX_SAVE_EVERY = 25;
 
 interface Counters {
   uploaded: number;
@@ -78,13 +90,35 @@ async function resolveFolder(deps: PushDeps): Promise<Result<DriveFileId>> {
   return ensured;
 }
 
-/** Reads and hashes every local file. The hash is always of the plaintext. */
+/**
+ * Reads and hashes every local file. The hash is always of the plaintext.
+ *
+ * A file whose mtime AND size both still match the index keeps its recorded
+ * hash and is never opened. On a vault where little changed between pushes this
+ * turns "read every byte you own" into "stat every file", which is the
+ * difference between minutes and a moment.
+ *
+ * Staleness is still decided ONLY by comparing sha256 against the index. mtime
+ * is never evidence that a file changed — only that it might have.
+ */
 async function collectLocalFiles(deps: PushDeps): Promise<Result<LocalFile[]>> {
   const stats = await deps.vault.listFiles();
   const files: LocalFile[] = [];
+  let hashed = 0;
 
   deps.progress.begin('Reading vault', stats.length);
   for (const stat of stats) {
+    if (deps.cancellation.isCancelled()) {
+      return err(cancelledError('Cancelled while reading the vault.'));
+    }
+
+    const known = deps.index.get(stat.path);
+    if (known?.mtime === stat.mtime && known.size === stat.size) {
+      files.push({ path: stat.path, sha256: known.sha256, mtime: stat.mtime, size: stat.size });
+      deps.progress.advance(stat.path);
+      continue;
+    }
+
     try {
       const bytes = await deps.vault.readBinary(stat.path);
       files.push({
@@ -93,12 +127,14 @@ async function collectLocalFiles(deps: PushDeps): Promise<Result<LocalFile[]>> {
         mtime: stat.mtime,
         size: stat.size,
       });
+      hashed += 1;
     } catch (cause) {
       return err(cryptoError(`Could not read ${stat.path}.`, cause));
     }
     deps.progress.advance(stat.path);
   }
 
+  deps.progress.note(`hashed ${String(hashed)} of ${String(stats.length)} files`);
   return ok(files);
 }
 
@@ -195,7 +231,15 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
   const work = plan.actions.filter((action) => action.type !== 'skip');
   deps.progress.begin('Pushing', work.length);
 
+  let cancelled = false;
+  let sinceSave = 0;
+
   for (const action of plan.actions) {
+    if (deps.cancellation.isCancelled()) {
+      cancelled = true;
+      break;
+    }
+
     const outcome = await applyAction(deps, action, {
       folderId: folderId.value,
       salt: salt.value,
@@ -207,13 +251,21 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
     if (!outcome.ok) {
       failures.push({ path: action.path, message: outcome.error.message });
     }
-    if (action.type !== 'skip') deps.progress.advance(action.path);
+    if (action.type !== 'skip') {
+      deps.progress.advance(action.path);
+      sinceSave += 1;
+      if (sinceSave >= INDEX_SAVE_EVERY) {
+        await deps.index.save();
+        sinceSave = 0;
+      }
+    }
   }
 
   await deps.index.save();
 
   return ok({
     operation: 'push',
+    cancelled,
     uploaded: counters.uploaded,
     updated: counters.updated,
     downloaded: 0,
@@ -281,6 +333,7 @@ async function applyAction(
           driveFileId: driveFileId(uploaded.value.id),
           remoteMd5: uploaded.value.md5Checksum ?? '',
           mtime: file.mtime,
+          size: file.size,
         });
         context.counters.uploaded += 1;
         return ok(undefined);
@@ -305,6 +358,7 @@ async function applyAction(
         driveFileId: action.fileId,
         remoteMd5: updated.value.md5Checksum ?? '',
         mtime: file.mtime,
+        size: file.size,
       });
       context.counters.updated += 1;
       return ok(undefined);

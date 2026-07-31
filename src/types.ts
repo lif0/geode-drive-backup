@@ -214,7 +214,14 @@ export interface IndexEntry {
   readonly driveFileId: DriveFileId;
   /** The md5 Drive reported for the bytes we last wrote. Detects other devices. */
   readonly remoteMd5: string;
+  /**
+   * Modification time and size when `sha256` was computed. Together they let a
+   * push skip re-reading a file that cannot have changed, which is the
+   * difference between seconds and minutes on a large vault. `-1` means an entry
+   * written before this field existed, so it always misses.
+   */
   readonly mtime: number;
+  readonly size: number;
 }
 
 /** Path to index entry. Lives in data.json and is never uploaded. */
@@ -295,6 +302,8 @@ export interface PullPlan {
 /** What a finished push or pull did. Rendered as the closing Notice. */
 export interface OperationSummary {
   readonly operation: 'push' | 'pull';
+  /** True if the user stopped the run. Everything already done still counts. */
+  readonly cancelled: boolean;
   readonly uploaded: number;
   readonly updated: number;
   readonly downloaded: number;
@@ -305,10 +314,22 @@ export interface OperationSummary {
   readonly failures: readonly { readonly path: VaultPath; readonly message: string }[];
 }
 
+/**
+ * Cooperative cancellation.
+ *
+ * Checked between files, never inside one. A run stopped this way leaves no
+ * half-uploaded file on Drive and no truncated file in the vault.
+ */
+export interface CancellationToken {
+  isCancelled(): boolean;
+}
+
 /** Progress sink. The Notice-based implementation lives in ui/progress.ts. */
 export interface ProgressReporter {
   begin(label: string, total: number): void;
   advance(label: string): void;
+  /** An incidental line under the counter. Implementations may ignore it. */
+  note(text: string): void;
   done(summary: OperationSummary): void;
   fail(error: AppError): void;
 }

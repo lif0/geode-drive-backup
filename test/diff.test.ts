@@ -51,6 +51,7 @@ function entry(content: string, md5: string, id?: string): IndexEntry {
     driveFileId: driveFileId(id ?? 'id-x'),
     remoteMd5: md5,
     mtime: 1,
+    size: 10,
   };
 }
 

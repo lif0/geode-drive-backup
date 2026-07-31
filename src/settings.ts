@@ -17,6 +17,8 @@ export interface StoredIndexEntry {
   driveFileId: string;
   remoteMd5: string;
   mtime: number;
+  /** `-1` in entries written before this field existed. */
+  size: number;
 }
 
 /** Everything Geode persists. */
@@ -93,12 +95,15 @@ function readIndex(source: Record<string, unknown>, key: string): Record<string,
     const driveFileId = raw['driveFileId'];
     const remoteMd5 = raw['remoteMd5'];
     const mtime = raw['mtime'];
+    const size = raw['size'];
     if (typeof sha256 !== 'string' || typeof driveFileId !== 'string') continue;
     out[path] = {
       sha256,
       driveFileId,
       remoteMd5: typeof remoteMd5 === 'string' ? remoteMd5 : '',
       mtime: typeof mtime === 'number' ? mtime : 0,
+      // An older entry has no size, so the hash cache must miss on it.
+      size: typeof size === 'number' ? size : -1,
     };
   }
   return out;

@@ -1,4 +1,4 @@
-# Geode
+# GeodeDrive
 
 **English** · [Русский](docs/README.ru.md) · [简体中文](docs/README.zh-CN.md) ·
 [Español](docs/README.es.md)
@@ -33,7 +33,7 @@ Works on desktop and on phones — no Node APIs, no `fetch`, no runtime dependen
 | Refuse to overwrite another device's edits    | Propagate deletions (unless you turn it on) |
 | Report conflicts and move on                  | Keep file history or versions               |
 
-If you need a sync engine, this is the wrong tool. Geode is the thing you run before a risky
+If you need a sync engine, this is the wrong tool. GeodeDrive is the thing you run before a risky
 change to your vault, and the thing you run on a new laptop.
 
 ---
@@ -45,7 +45,7 @@ change to your vault, and the thing you run on a new laptop.
 1. Download `main.js` and `manifest.json` from the
    [latest release](https://github.com/lif0/geode-drive-backup/releases).
 2. Put them in `<your vault>/.obsidian/plugins/geode-drive-backup/`.
-3. Restart Obsidian, then enable **Geode** in _Settings → Community plugins_.
+3. Restart Obsidian, then enable **GeodeDrive** in _Settings → Community plugins_.
 
 ### From source
 
@@ -63,7 +63,7 @@ run `npm run dev` for a watching build.
 
 ## Setup: your own Google OAuth client
 
-Geode never routes your notes through a third party, so you supply the Google credentials. This is
+GeodeDrive never routes your notes through a third party, so you supply the Google credentials. This is
 a one-time, ten-minute job.
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/) and create a project.
@@ -82,7 +82,7 @@ a one-time, ten-minute job.
 
 > [!IMPORTANT]
 > **Do not leave the app in _Testing_.** Google issues every External app whose publishing status is
-> _Testing_ a refresh token that expires after **7 days**. Geode would then fail with "Google revoked
+> _Testing_ a refresh token that expires after **7 days**. GeodeDrive would then fail with "Google revoked
 > this connection" once a week, forever. **Publish app** fixes it permanently.
 >
 > Publishing costs nothing here. You remain the only user, and `drive.file` is a **non-sensitive**
@@ -96,7 +96,7 @@ a one-time, ten-minute job.
 Why that odd client type, why you make your own client, and why publishing is safe:
 [docs/auth-design.md](docs/auth-design.md).
 
-Geode requests exactly one scope: `https://www.googleapis.com/auth/drive.file`. That grants access
+GeodeDrive requests exactly one scope: `https://www.googleapis.com/auth/drive.file`. That grants access
 only to files this plugin created — it cannot read anything else in your Drive. The broader `drive`
 scope is never requested; it is a restricted scope requiring a paid security assessment, and a
 backup tool has no business with it.
@@ -118,15 +118,17 @@ demand.
 
 ## Usage
 
-Five commands, all from the command palette (`Ctrl/Cmd+P`):
+Six commands from the command palette (`Ctrl/Cmd+P`), a ribbon icon for push, and **Push now** /
+**Pull now** buttons at the top of the settings tab:
 
-| Command                    | What it does                                                  |
-| -------------------------- | ------------------------------------------------------------- |
-| **Push changes to Drive**  | Uploads new and changed files. Skips everything else.         |
-| **Pull vault from Drive**  | Downloads the whole backup. Never overwrites, never deletes.  |
-| **Unlock encryption**      | Validates your passphrase and caches the key for the session. |
-| **Connect Google account** | Runs the sign-in flow.                                        |
-| **Show backup status**     | Connection, folder, tracked file count, encryption state.     |
+| Command                      | What it does                                                  |
+| ---------------------------- | ------------------------------------------------------------- |
+| **Push changes to Drive**    | Uploads new and changed files. Skips everything else.         |
+| **Pull vault from Drive**    | Downloads the whole backup. Never overwrites, never deletes.  |
+| **Unlock encryption**        | Validates your passphrase and caches the key for the session. |
+| **Connect Google account**   | Runs the sign-in flow.                                        |
+| **Show backup status**       | Connection, folder, tracked file count, encryption state.     |
+| **Cancel current operation** | Stops after the file in flight. Nothing is left half-written. |
 
 ### Typical first run
 
@@ -144,9 +146,19 @@ Install Geode  →  paste the same client ID + secret  →  Connect  →  Pull v
 ```
 
 Pull downloads every file and rebuilds the folder tree from the encoded names. If the vault already
-has a file at an incoming path and Geode cannot prove the two are identical, the incoming copy is
+has a file at an incoming path and GeodeDrive cannot prove the two are identical, the incoming copy is
 written as `note (from drive).md` instead — repeated collisions become `(from drive 2)`,
 `(from drive 3)` and so on. **Pull never deletes and never overwrites.**
+
+### Stopping a long run
+
+Push and pull can be stopped at any point: press **Cancel** on the progress notice, or run **Cancel
+current operation**. The run finishes the file it is on and then stops, so nothing is left
+half-uploaded on Drive or truncated in the vault.
+
+Whatever already transferred stays transferred. The index is written every 25 files as well as at
+the end, so a stopped — or crashed, or battery-dead — run simply resumes where it left off instead
+of starting over.
 
 ### Reading the summary
 
@@ -160,7 +172,7 @@ Push finished: 12 uploaded, 3 updated, 486 unchanged.
   Projects/roadmap.md
 ```
 
-A **conflict** means the Drive copy changed since this device last wrote it. Geode will not guess
+A **conflict** means the Drive copy changed since this device last wrote it. GeodeDrive will not guess
 which side wins, so it skips the file and tells you. Resolve it by pulling — you get both copies
 side by side — or by deciding manually.
 
@@ -249,7 +261,7 @@ ones.
 
 ## How change detection works
 
-Geode decides a file is stale by comparing the SHA-256 of its **plaintext** against a local index in
+GeodeDrive decides a file is stale by comparing the SHA-256 of its **plaintext** against a local index in
 `data.json`.
 
 This matters more than it sounds. Encrypted files get a fresh nonce on every push, so their
@@ -258,15 +270,17 @@ did not. Any staleness check based on remote checksums would re-upload the entir
 run. The plaintext hash is the only signal that stays still.
 
 The remote md5 is used for exactly one thing: noticing that **another device** rewrote a file since
-this one last pushed it. That is a conflict, and Geode refuses to overwrite it.
+this one last pushed it. That is a conflict, and GeodeDrive refuses to overwrite it.
 
 The plaintext hash never leaves your device. Uploading it for an encrypted file would let anyone
 confirm a guess at its contents.
 
 Consequences worth knowing:
 
-- Push reads every file in the vault in order to hash it. Correct, but not free on a vault full of
-  large attachments.
+- A file whose modification time **and** size both still match the index keeps its recorded hash and
+  is never opened. On a large vault where little changed, a push stats every file but reads almost
+  none of them. Staleness is still decided only by sha256 — mtime is never evidence that a file
+  changed, only that it might have.
 - Losing `data.json` is not fatal. The next push sees files it has no record of, finds them already
   on Drive, and reports them as conflicts rather than clobbering them. Pull rebuilds the index.
 - `.obsidian/` is never backed up. That is where `data.json` lives — and with it your Google refresh
@@ -286,12 +300,12 @@ Geode/
 The path lives in the file name because Drive's `appProperties` cap at roughly 124 bytes per
 key/value pair, which any non-ASCII path overflows. `appProperties` carries only `{ v, enc }`.
 
-Every upload names that folder as its parent, so nothing Geode writes can land anywhere else — and
+Every upload names that folder as its parent, so nothing GeodeDrive writes can land anywhere else — and
 `drive.file` means it cannot even see the rest of your Drive.
 
 The folder is created in the root of My Drive, and the plugin offers no way to choose somewhere
 else: with `drive.file` it has no visibility into your folder tree, so it has no parent id to write.
-If you want it filed somewhere tidier, **drag it there once in the Drive web UI**. Geode addresses
+If you want it filed somewhere tidier, **drag it there once in the Drive web UI**. GeodeDrive addresses
 the folder by its file id, so the move is invisible to it; and if `data.json` is ever lost, the
 fallback lookup searches by name with no parent constraint and finds it wherever you put it.
 

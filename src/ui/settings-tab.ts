@@ -18,6 +18,10 @@ export interface SettingsHost {
   disconnectAccount(): Promise<void>;
   isConnected(): boolean;
   isUnlocked(): boolean;
+  /** True while a push or pull is running, so the buttons can disable. */
+  isBusy(): boolean;
+  pushNow(): Promise<void>;
+  pullNow(): Promise<void>;
   lockEncryption(): void;
   /** How many files the local index is tracking. */
   trackedFileCount(): number;
@@ -43,6 +47,7 @@ export class GeodeSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
+    this.renderActions(containerEl);
     this.renderAccount(containerEl);
     this.renderStorage(containerEl);
     this.renderEncryption(containerEl);
@@ -63,12 +68,49 @@ export class GeodeSettingTab extends PluginSettingTab {
     return this.host.settings;
   }
 
+  private renderActions(root: HTMLElement): void {
+    const ready = this.host.isConnected() && !this.host.isBusy();
+
+    new Setting(root)
+      .setName('Backup')
+      .setDesc(
+        this.host.isBusy()
+          ? 'Working. Use "Cancel current operation" from the command palette, or the button on the progress notice.'
+          : 'Push uploads what changed. Pull rebuilds this vault from Drive without overwriting anything.',
+      )
+      .addButton((button) => {
+        button
+          .setButtonText('Push now')
+          .setCta()
+          .setDisabled(!ready)
+          .onClick(async () => {
+            await this.host.pushNow();
+            this.refresh();
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText('Pull now')
+          .setDisabled(!ready)
+          .onClick(async () => {
+            await this.host.pullNow();
+            this.refresh();
+          });
+      });
+
+    if (!this.host.isConnected()) {
+      const hint = root.createEl('p');
+      hint.setText('Connect a Google account below to enable these.');
+      hint.style.opacity = '0.7';
+    }
+  }
+
   private renderAccount(root: HTMLElement): void {
     new Setting(root).setName('Google account').setHeading();
 
     const intro = root.createEl('p');
     intro.setText(
-      'Geode uses your own Google Cloud OAuth client, so your notes never pass through anyone else. ' +
+      'GeodeDrive uses your own Google Cloud OAuth client, so your notes never pass through anyone else. ' +
         'Create one at console.cloud.google.com, enable the Drive API, and make a client of type ' +
         '"TVs and Limited Input devices".',
     );

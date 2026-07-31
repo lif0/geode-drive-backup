@@ -6,6 +6,7 @@ import type { DriveClient } from '../drive/client';
 import type { GeodeSettings } from '../settings';
 import type {
   Bytes,
+  CancellationToken,
   CryptoProvider,
   DriveFileId,
   LocalFile,
@@ -37,6 +38,7 @@ export interface PullDeps {
   readonly keys: KeyCache;
   readonly progress: ProgressReporter;
   readonly settings: GeodeSettings;
+  readonly cancellation: CancellationToken;
   /**
    * Asks the user for the passphrase. Always called with false: a pull only
    * needs a passphrase when the vault already has a `__keycheck`.
@@ -44,6 +46,9 @@ export interface PullDeps {
   readonly requestPassphrase: (isNewVault: boolean) => Promise<string | null>;
   readonly rememberFolderId: (id: DriveFileId) => Promise<void>;
 }
+
+/** Files processed between index writes, so an interrupted pull resumes. */
+const INDEX_SAVE_EVERY = 25;
 
 async function resolveFolder(deps: PullDeps): Promise<Result<DriveFileId>> {
   const cached = deps.settings.folderId;
@@ -165,10 +170,17 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
   const work = plan.actions.filter((action) => action.type !== 'skip');
   deps.progress.begin('Pulling', work.length);
 
+  let cancelled = deps.cancellation.isCancelled();
+  let sinceSave = 0;
+
   for (const action of plan.actions) {
     if (action.type === 'skip') {
       skipped += 1;
       continue;
+    }
+    if (deps.cancellation.isCancelled()) {
+      cancelled = true;
+      break;
     }
 
     const outcome = await writeIncoming(deps, action, remoteByPath);
@@ -179,12 +191,19 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
       failures.push({ path: action.path, message: outcome.error.message });
     }
     deps.progress.advance(action.writeTo);
+
+    sinceSave += 1;
+    if (sinceSave >= INDEX_SAVE_EVERY) {
+      await deps.index.save();
+      sinceSave = 0;
+    }
   }
 
   await deps.index.save();
 
   return ok({
     operation: 'pull',
+    cancelled,
     uploaded: 0,
     updated: 0,
     downloaded,
@@ -223,7 +242,10 @@ async function writeIncoming(
       sha256: await hashBytes(deps.crypto, plaintext.value),
       driveFileId: action.fileId,
       remoteMd5: remote?.md5 ?? '',
+      // The file was just written, so its mtime is now and its size is known.
+      // Both feed the hash cache on the next push.
       mtime: Date.now(),
+      size: plaintext.value.length,
     });
   }
 

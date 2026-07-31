@@ -12,7 +12,7 @@ import type { PushDeps } from './ops/push';
 import { runPush } from './ops/push';
 import type { AuthFlowKind, GeodeSettings, StoredIndexEntry } from './settings';
 import { defaultSettings, migrateSettings } from './settings';
-import type { CryptoProvider, OperationSummary, Result, VaultIo } from './types';
+import type { CancellationToken, CryptoProvider, OperationSummary, Result, VaultIo } from './types';
 import { vaultPath } from './types';
 import { DeviceCodeModal } from './ui/device-code-modal';
 import { PassphraseModal, PkceCodeModal } from './ui/passphrase-modal';
@@ -30,6 +30,12 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   private auth: AuthProvider | null = null;
   private authKind: AuthFlowKind | null = null;
   private busy = false;
+  private cancelRequested = false;
+
+  /** Read by the ops layer between files. Never interrupts a file mid-write. */
+  private readonly cancellation: CancellationToken = {
+    isCancelled: () => this.cancelRequested,
+  };
 
   override async onload(): Promise<void> {
     this.settings = migrateSettings(await this.loadData());
@@ -64,6 +70,17 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
         this.showStatus();
       },
     });
+    this.addCommand({
+      id: 'cancel',
+      name: 'Cancel current operation',
+      callback: () => {
+        this.requestCancel();
+      },
+    });
+
+    this.addRibbonIcon('upload-cloud', 'GeodeDrive: push changes to Drive', () => {
+      void this.push();
+    });
   }
 
   /** Drops the derived key. Obsidian calls this on disable, reload and quit. */
@@ -90,12 +107,15 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
     operation: (progress: NoticeProgress) => Promise<Result<OperationSummary>>,
   ): Promise<void> {
     if (this.busy) {
-      new Notice('Geode is already working. Wait for it to finish.');
+      new Notice('GeodeDrive is already working. Wait for it to finish.');
       return;
     }
 
     this.busy = true;
-    const progress = new NoticeProgress();
+    this.cancelRequested = false;
+    const progress = new NoticeProgress(() => {
+      this.requestCancel();
+    });
     try {
       const result = await operation(progress);
       if (result.ok) progress.done(result.value);
@@ -114,6 +134,7 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
       keys: this.keys,
       progress,
       settings: this.settings,
+      cancellation: this.cancellation,
       requestPassphrase: (isNewVault) =>
         new PassphraseModal(this.app, {
           title: isNewVault ? 'Set an encryption passphrase' : 'Unlock encryption',
@@ -131,12 +152,22 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   private async unlock(): Promise<void> {
     if (!this.settings.encryptionEnabled) {
-      new Notice('Geode: encryption is switched off in settings.');
+      new Notice('GeodeDrive: encryption is switched off in settings.');
       return;
     }
     // Unlocking needs the vault salt, which lives in __keycheck on Drive. A push
     // fetches it, validates the passphrase and caches the key for the session.
     await this.push();
+  }
+
+  /** Asks the running operation to stop after the file it is on. */
+  private requestCancel(): void {
+    if (!this.busy) {
+      new Notice('GeodeDrive: nothing is running.');
+      return;
+    }
+    this.cancelRequested = true;
+    new Notice('GeodeDrive: stopping after the current file…', 4000);
   }
 
   private showStatus(): void {
@@ -151,7 +182,7 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
         ? 'Deletions are mirrored to Drive.'
         : 'Deletions stay on Drive.',
     ];
-    new Notice(`Geode\n${lines.join('\n')}`, 10_000);
+    new Notice(`GeodeDrive\n${lines.join('\n')}`, 10_000);
   }
 
   /* -------------------------------- wiring -------------------------------- */
@@ -225,16 +256,30 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   async connectAccount(): Promise<void> {
     const result = await this.authProvider().connect();
-    new Notice(result.ok ? 'Geode: connected to Google Drive.' : `Geode: ${result.error.message}`);
+    new Notice(
+      result.ok ? 'GeodeDrive: connected to Google Drive.' : `GeodeDrive: ${result.error.message}`,
+    );
   }
 
   async disconnectAccount(): Promise<void> {
     await this.authProvider().disconnect();
-    new Notice('Geode: forgot the stored Google token.');
+    new Notice('GeodeDrive: forgot the stored Google token.');
   }
 
   isConnected(): boolean {
     return this.settings.refreshToken !== null;
+  }
+
+  async pushNow(): Promise<void> {
+    await this.push();
+  }
+
+  async pullNow(): Promise<void> {
+    await this.pull();
+  }
+
+  isBusy(): boolean {
+    return this.busy;
   }
 
   isUnlocked(): boolean {

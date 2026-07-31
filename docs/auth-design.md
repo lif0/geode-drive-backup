@@ -39,7 +39,7 @@ but it needs no server, so it also works on a phone.
 
 This is a real trade-off, not an oversight. Both designs work.
 
-**What Geode does:** you create an OAuth client and paste the id and secret into settings. Ten
+**What GeodeDrive does:** you create an OAuth client and paste the id and secret into settings. Ten
 minutes, once.
 
 **The alternative:** the developer creates one client and embeds the id and secret in the plugin.
@@ -75,7 +75,7 @@ window asking for a Google password is indistinguishable from phishing. Obsidian
 rejects it and Google blocks it.
 
 OAuth is the replacement, and the consent screen living in the browser — not in the plugin — is the
-entire point: Geode never sees your password.
+entire point: GeodeDrive never sees your password.
 
 ---
 

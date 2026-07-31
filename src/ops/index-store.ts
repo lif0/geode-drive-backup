@@ -30,6 +30,7 @@ export function readIndex(stored: Record<string, StoredIndexEntry>): LocalIndex 
       driveFileId: driveFileId(entry.driveFileId),
       remoteMd5: entry.remoteMd5,
       mtime: entry.mtime,
+      size: entry.size,
     };
   }
 
@@ -46,6 +47,7 @@ export function writeIndex(index: LocalIndex): Record<string, StoredIndexEntry> 
       driveFileId: entry.driveFileId,
       remoteMd5: entry.remoteMd5,
       mtime: entry.mtime,
+      size: entry.size,
     };
   }
 
@@ -82,7 +84,13 @@ export class IndexStore {
   /** Records a successful upload, update or download. */
   set(
     path: VaultPath,
-    entry: { sha256: Sha256Hex; driveFileId: DriveFileId; remoteMd5: string; mtime: number },
+    entry: {
+      sha256: Sha256Hex;
+      driveFileId: DriveFileId;
+      remoteMd5: string;
+      mtime: number;
+      size: number;
+    },
   ): void {
     this.index[path] = { ...entry };
   }

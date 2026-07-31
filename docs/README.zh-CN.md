@@ -1,4 +1,4 @@
-# Geode
+# GeodeDrive
 
 [English](../README.md) · [Русский](README.ru.md) · **简体中文** · [Español](README.es.md)
 
@@ -32,7 +32,7 @@
 | 拒绝覆盖其他设备的修改           | 不传播删除操作（除非你主动开启） |
 | 报告冲突然后继续                 | 不保留文件历史或版本             |
 
-如果你需要的是同步引擎，那这个工具不合适。Geode 适合在对仓库做有风险的改动之前运行，以及在新电脑上
+如果你需要的是同步引擎，那这个工具不合适。GeodeDrive 适合在对仓库做有风险的改动之前运行，以及在新电脑上
 运行。
 
 ---
@@ -44,7 +44,7 @@
 1. 从[最新发布页](https://github.com/lif0/geode-drive-backup/releases)下载 `main.js` 和
    `manifest.json`。
 2. 放进 `<你的仓库>/.obsidian/plugins/geode-drive-backup/`。
-3. 重启 Obsidian，然后在 _Settings → Community plugins_ 中启用 **Geode**。
+3. 重启 Obsidian，然后在 _Settings → Community plugins_ 中启用 **GeodeDrive**。
 
 ### 从源码构建
 
@@ -62,7 +62,7 @@ npm run build          # 类型检查 + lint + 测试 + 打包
 
 ## 配置：你自己的 Google OAuth 客户端
 
-Geode 绝不会让你的笔记经过任何第三方，所以 Google 凭据由你自己提供。这是一次性的工作，大约十分钟。
+GeodeDrive 绝不会让你的笔记经过任何第三方，所以 Google 凭据由你自己提供。这是一次性的工作，大约十分钟。
 
 1. 打开 [Google Cloud Console](https://console.cloud.google.com/) 并创建一个项目。
 2. **APIs & Services → Library** → 启用 **Google Drive API**。
@@ -80,7 +80,7 @@ Geode 绝不会让你的笔记经过任何第三方，所以 Google 凭据由你
 
 > [!IMPORTANT]
 > **不要把应用留在 _Testing_ 状态。** 对于发布状态为 _Testing_ 的 External 应用，Google 签发的
-> refresh token 会在 **7 天**后失效。此后 Geode 每周都会以 “Google revoked this connection” 失败，
+> refresh token 会在 **7 天**后失效。此后 GeodeDrive 每周都会以 “Google revoked this connection” 失败，
 > 永远如此。点击 **Publish app** 可以一劳永逸地解决。
 >
 > 在这里发布不需要任何代价。你仍然是唯一的用户，而 `drive.file` 属于 **non-sensitive** 权限——既不
@@ -93,7 +93,7 @@ Geode 绝不会让你的笔记经过任何第三方，所以 Google 凭据由你
 为什么客户端类型的名字这么奇怪、为什么要你自己创建客户端、以及为什么发布是安全的：
 [docs/auth-design.md](auth-design.md)（英文）。
 
-Geode 只申请一个权限范围：`https://www.googleapis.com/auth/drive.file`。它只能访问本插件自己创建
+GeodeDrive 只申请一个权限范围：`https://www.googleapis.com/auth/drive.file`。它只能访问本插件自己创建
 的文件——无法读取你 Drive 中的任何其他内容。范围更大的 `drive` 权限永远不会被申请：那是受限权限，
 需要付费的安全评估，而一个备份工具不该碰它。
 
@@ -113,15 +113,17 @@ Geode 只申请一个权限范围：`https://www.googleapis.com/auth/drive.file`
 
 ## 使用
 
-五个命令，全部通过命令面板（`Ctrl/Cmd+P`）调用：
+六个命令通过命令面板（`Ctrl/Cmd+P`）调用，另有侧边栏推送图标，以及设置页顶部的 **Push now** /
+**Pull now** 按钮：
 
-| 命令                       | 作用                                       |
-| -------------------------- | ------------------------------------------ |
-| **Push changes to Drive**  | 上传新增和变更的文件，其余跳过。           |
-| **Pull vault from Drive**  | 下载整个备份。绝不覆盖，绝不删除。         |
-| **Unlock encryption**      | 校验口令并把密钥缓存到本次会话。           |
-| **Connect Google account** | 运行登录流程。                             |
-| **Show backup status**     | 连接状态、文件夹、已跟踪文件数、加密状态。 |
+| 命令                         | 作用                                           |
+| ---------------------------- | ---------------------------------------------- |
+| **Push changes to Drive**    | 上传新增和变更的文件，其余跳过。               |
+| **Pull vault from Drive**    | 下载整个备份。绝不覆盖，绝不删除。             |
+| **Unlock encryption**        | 校验口令并把密钥缓存到本次会话。               |
+| **Connect Google account**   | 运行登录流程。                                 |
+| **Show backup status**       | 连接状态、文件夹、已跟踪文件数、加密状态。     |
+| **Cancel current operation** | 在当前文件完成后停止，不会留下写了一半的内容。 |
 
 ### 典型的首次运行
 
@@ -137,9 +139,18 @@ Connect Google account   →   Push changes to Drive
 安装 Geode  →  粘贴相同的 client ID 和 secret  →  Connect  →  Pull vault from Drive
 ```
 
-Pull 会下载所有文件，并从编码后的文件名重建目录树。如果仓库中已经存在同路径的文件，而 Geode 无法
+Pull 会下载所有文件，并从编码后的文件名重建目录树。如果仓库中已经存在同路径的文件，而 GeodeDrive 无法
 证明两者完全相同，那么传入的副本会写成 `note (from drive).md`——重复冲突时依次为 `(from drive 2)`、
 `(from drive 3)`，以此类推。**Pull 绝不删除，也绝不覆盖。**
+
+### 如何中止长时间运行
+
+推送和拉取随时可以中止：点击进度通知上的 **Cancel** 按钮，或执行 **Cancel current operation**
+命令。运行会先完成当前文件再停止，因此不会在 Drive 上留下传了一半的文件，也不会在仓库里留下被截断
+的文件。
+
+已经传输完成的内容都会保留。索引不只在结束时写入，而是每 25 个文件写一次，所以中止的运行——无论是
+主动取消、崩溃还是电量耗尽——都会从中断处继续，而不是从头再来。
 
 ### 如何看结果摘要
 
@@ -153,7 +164,7 @@ Push finished: 12 uploaded, 3 updated, 486 unchanged.
   Projects/roadmap.md
 ```
 
-**冲突**意味着自本设备上次写入之后，Drive 上的副本发生了变化。Geode 不会替你猜哪一边该赢，因此它
+**冲突**意味着自本设备上次写入之后，Drive 上的副本发生了变化。GeodeDrive 不会替你猜哪一边该赢，因此它
 跳过该文件并告诉你。解决办法：执行 pull（两份副本会并排保留），或者手动决定。
 
 ---
@@ -234,20 +245,22 @@ node tools/decrypt.mjs --verify-vectors test/vectors.json
 
 ## 变更检测的原理
 
-Geode 通过比较文件**明文**的 SHA-256 与 `data.json` 中的本地索引来判断文件是否过期。
+GeodeDrive 通过比较文件**明文**的 SHA-256 与 `data.json` 中的本地索引来判断文件是否过期。
 
 这件事比听起来更重要。加密文件每次推送都会得到新的 nonce，因此它们的密文——以及 Drive 的
 `md5Checksum`——每次都会变，哪怕笔记本身没动。任何基于远端校验和的过期判断，都会导致每次运行都重新
 上传整个仓库。明文哈希是唯一不会变动的信号。
 
-远端 md5 只用于一件事：发现**另一台设备**在本机上次推送之后重写了该文件。那是冲突，Geode 拒绝
+远端 md5 只用于一件事：发现**另一台设备**在本机上次推送之后重写了该文件。那是冲突，GeodeDrive 拒绝
 覆盖它。
 
 明文哈希永远不会离开你的设备。为加密文件上传它，会让任何人都能验证对其内容的猜测。
 
 值得了解的后果：
 
-- Push 会读取仓库中的每个文件以计算哈希。这是正确的做法，但在有大量大附件的仓库上并不便宜。
+- 如果一个文件的修改时间**和**大小都与索引一致，它会沿用已记录的哈希，根本不会被打开。在改动很少
+  的大仓库上，push 只会遍历全部文件而几乎不读取任何一个。过期判断仍然只依据 sha256——mtime 从不
+  证明文件变了，只说明它可能变了。
 - 丢失 `data.json` 不是灾难。下次推送会看到没有记录的文件，发现它们已经在 Drive 上，于是报告为
   冲突而不是覆盖。Pull 会重建索引。
 - `.obsidian/` 永远不会被备份。`data.json` 就在那里，而其中存着你的 Google refresh token。
@@ -266,12 +279,12 @@ Geode/
 路径之所以存放在文件名里，是因为 Drive 的 `appProperties` 每个键/值对上限约为 124 字节，任何非
 ASCII 路径都会超出。`appProperties` 只携带 `{ v, enc }`。
 
-每次上传都会显式指定该文件夹为父目录，因此 Geode 写入的任何内容都不可能落到别处——而且
+每次上传都会显式指定该文件夹为父目录，因此 GeodeDrive 写入的任何内容都不可能落到别处——而且
 `drive.file` 权限让插件根本看不到你 Drive 的其余部分。
 
 文件夹创建在「我的云端硬盘」根目录，插件不提供选择其他位置的方式：在 `drive.file` 权限下它看不到
 你的目录树，也就拿不到父目录的 id。如果你想把它放得整齐些，**在 Drive 网页端把它拖过去一次即可**。
-Geode 通过 file id 定位该文件夹，所以移动对它是透明的；即便 `data.json` 丢失，回退查找也是按名称
+GeodeDrive 通过 file id 定位该文件夹，所以移动对它是透明的；即便 `data.json` 丢失，回退查找也是按名称
 搜索且不限定父目录，无论你把它放在哪里都能找到。
 
 ---

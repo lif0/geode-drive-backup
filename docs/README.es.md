@@ -1,4 +1,4 @@
-# Geode
+# GeodeDrive
 
 [English](../README.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · **Español**
 
@@ -37,7 +37,7 @@ ejecución.
 | Se niega a sobrescribir cambios de otro dispositivo  | Propagar borrados (salvo que lo actives)         |
 | Informa de los conflictos y sigue adelante           | Guardar historial ni versiones de archivos       |
 
-Si lo que necesitas es un motor de sincronización, esta no es la herramienta. Geode es lo que
+Si lo que necesitas es un motor de sincronización, esta no es la herramienta. GeodeDrive es lo que
 ejecutas antes de un cambio arriesgado en tu bóveda, y lo que ejecutas en un portátil nuevo.
 
 ---
@@ -49,7 +49,7 @@ ejecutas antes de un cambio arriesgado en tu bóveda, y lo que ejecutas en un po
 1. Descarga `main.js` y `manifest.json` de la
    [última release](https://github.com/lif0/geode-drive-backup/releases).
 2. Colócalos en `<tu bóveda>/.obsidian/plugins/geode-drive-backup/`.
-3. Reinicia Obsidian y activa **Geode** en _Settings → Community plugins_.
+3. Reinicia Obsidian y activa **GeodeDrive** en _Settings → Community plugins_.
 
 ### Desde el código fuente
 
@@ -67,7 +67,7 @@ simbólico al repositorio y ejecuta `npm run dev` para compilar en modo vigilanc
 
 ## Configuración: tu propio cliente OAuth de Google
 
-Geode nunca hace pasar tus notas por un tercero, así que las credenciales de Google las pones tú. Es
+GeodeDrive nunca hace pasar tus notas por un tercero, así que las credenciales de Google las pones tú. Es
 un trabajo de una sola vez, unos diez minutos.
 
 1. Abre la [Google Cloud Console](https://console.cloud.google.com/) y crea un proyecto.
@@ -87,7 +87,7 @@ un trabajo de una sola vez, unos diez minutos.
 
 > [!IMPORTANT]
 > **No dejes la app en _Testing_.** Google entrega a toda app External cuyo estado de publicación
-> sea _Testing_ un refresh token que caduca a los **7 días**. A partir de ahí Geode fallaría con
+> sea _Testing_ un refresh token que caduca a los **7 días**. A partir de ahí GeodeDrive fallaría con
 > «Google revoked this connection» una vez por semana, para siempre. **Publish app** lo arregla de
 > forma definitiva.
 >
@@ -103,7 +103,7 @@ un trabajo de una sola vez, unos diez minutos.
 Por qué el tipo de cliente se llama así, por qué creas tú el cliente y por qué publicar es seguro:
 [docs/auth-design.md](auth-design.md) (en inglés).
 
-Geode solicita exactamente un permiso: `https://www.googleapis.com/auth/drive.file`. Solo da acceso
+GeodeDrive solicita exactamente un permiso: `https://www.googleapis.com/auth/drive.file`. Solo da acceso
 a los archivos que ha creado este plugin; no puede leer nada más de tu Drive. El permiso amplio
 `drive` no se solicita nunca: es un permiso restringido que exige una auditoría de seguridad de
 pago, y una herramienta de copias de seguridad no tiene nada que hacer ahí.
@@ -126,15 +126,17 @@ cuando hacen falta.
 
 ## Uso
 
-Cinco comandos, todos desde la paleta de comandos (`Ctrl/Cmd+P`):
+Seis comandos desde la paleta (`Ctrl/Cmd+P`), un icono de barra lateral para el push y botones
+**Push now** / **Pull now** arriba en la pestaña de ajustes:
 
-| Comando                    | Qué hace                                                           |
-| -------------------------- | ------------------------------------------------------------------ |
-| **Push changes to Drive**  | Sube los archivos nuevos y modificados. El resto lo omite.         |
-| **Pull vault from Drive**  | Descarga la copia entera. Nunca sobrescribe, nunca borra.          |
-| **Unlock encryption**      | Valida tu contraseña y guarda la clave en caché durante la sesión. |
-| **Connect Google account** | Ejecuta el flujo de inicio de sesión.                              |
-| **Show backup status**     | Conexión, carpeta, archivos rastreados y estado del cifrado.       |
+| Comando                      | Qué hace                                                           |
+| ---------------------------- | ------------------------------------------------------------------ |
+| **Push changes to Drive**    | Sube los archivos nuevos y modificados. El resto lo omite.         |
+| **Pull vault from Drive**    | Descarga la copia entera. Nunca sobrescribe, nunca borra.          |
+| **Unlock encryption**        | Valida tu contraseña y guarda la clave en caché durante la sesión. |
+| **Connect Google account**   | Ejecuta el flujo de inicio de sesión.                              |
+| **Show backup status**       | Conexión, carpeta, archivos rastreados y estado del cifrado.       |
+| **Cancel current operation** | Para tras el archivo en curso. Nada queda escrito a medias.        |
 
 ### Primera ejecución típica
 
@@ -152,10 +154,20 @@ Instalar Geode  →  pegar el mismo client ID y secret  →  Connect  →  Pull 
 ```
 
 Pull descarga todos los archivos y reconstruye el árbol de carpetas a partir de los nombres
-codificados. Si la bóveda ya tiene un archivo en la ruta entrante y Geode no puede demostrar que son
+codificados. Si la bóveda ya tiene un archivo en la ruta entrante y GeodeDrive no puede demostrar que son
 idénticos, la copia entrante se escribe como `note (from drive).md`; si vuelve a haber colisión, se
 convierte en `(from drive 2)`, `(from drive 3)`, y así sucesivamente. **Pull nunca borra ni
 sobrescribe.**
+
+### Cómo detener una ejecución larga
+
+El push y el pull se pueden parar en cualquier momento: pulsa **Cancel** en el aviso de progreso, o
+ejecuta **Cancel current operation**. La ejecución termina el archivo que tiene entre manos y se
+detiene, así que nada queda a medio subir en Drive ni truncado en la bóveda.
+
+Todo lo ya transferido sigue transferido. El índice se escribe cada 25 archivos además de al final,
+de modo que una ejecución detenida —cancelada, caída o con la batería agotada— simplemente continúa
+donde lo dejó en vez de empezar de cero.
 
 ### Cómo leer el resumen
 
@@ -170,7 +182,7 @@ Push finished: 12 uploaded, 3 updated, 486 unchanged.
 ```
 
 Un **conflicto** significa que la copia de Drive cambió desde la última vez que este dispositivo la
-escribió. Geode no va a adivinar qué lado gana, así que omite el archivo y te lo dice. Se resuelve
+escribió. GeodeDrive no va a adivinar qué lado gana, así que omite el archivo y te lo dice. Se resuelve
 haciendo pull —te quedas con las dos copias, una al lado de la otra— o decidiendo a mano.
 
 ---
@@ -264,7 +276,7 @@ casos, nunca editar los existentes.
 
 ## Cómo se detectan los cambios
 
-Geode decide que un archivo está obsoleto comparando el SHA-256 de su **texto en claro** con un
+GeodeDrive decide que un archivo está obsoleto comparando el SHA-256 de su **texto en claro** con un
 índice local guardado en `data.json`.
 
 Esto importa más de lo que parece. Los archivos cifrados reciben un nonce nuevo en cada push, así que
@@ -274,15 +286,17 @@ subir la bóveda entera en cada ejecución. El hash del texto en claro es la ún
 quieta.
 
 El md5 remoto se usa para una sola cosa: detectar que **otro dispositivo** reescribió un archivo
-desde el último push de este. Eso es un conflicto, y Geode se niega a sobrescribirlo.
+desde el último push de este. Eso es un conflicto, y GeodeDrive se niega a sobrescribirlo.
 
 El hash del texto en claro nunca sale de tu dispositivo. Subirlo para un archivo cifrado permitiría
 a cualquiera confirmar una conjetura sobre su contenido.
 
 Consecuencias que conviene conocer:
 
-- El push lee todos los archivos de la bóveda para calcular su hash. Es correcto, pero no sale
-  gratis en una bóveda llena de adjuntos grandes.
+- Un archivo cuya fecha de modificación **y** tamaño siguen coincidiendo con el índice conserva su
+  hash registrado y ni siquiera se abre. En una bóveda grande donde cambió poco, el push recorre
+  todos los archivos pero apenas lee ninguno. La obsolescencia se sigue decidiendo solo por sha256:
+  el mtime nunca prueba que un archivo cambió, solo que pudo cambiar.
 - Perder `data.json` no es fatal. El siguiente push verá archivos de los que no tiene constancia, los
   encontrará ya en Drive y los reportará como conflictos en lugar de machacarlos. El pull reconstruye
   el índice.
@@ -303,12 +317,12 @@ La ruta vive en el nombre del archivo porque las `appProperties` de Drive están
 bytes por par clave/valor, y cualquier ruta no ASCII se pasa de ahí. Las `appProperties` solo llevan
 `{ v, enc }`.
 
-Cada subida indica esa carpeta como padre, así que nada de lo que escribe Geode puede acabar en otro
+Cada subida indica esa carpeta como padre, así que nada de lo que escribe GeodeDrive puede acabar en otro
 sitio; y con `drive.file` ni siquiera puede ver el resto de tu Drive.
 
 La carpeta se crea en la raíz de Mi unidad, y el plugin no ofrece forma de elegir otro sitio: con
 `drive.file` no ve tu árbol de carpetas, así que no tiene ningún id de padre que escribir. Si la
-quieres mejor colocada, **arrástrala una vez desde la interfaz web de Drive**. Geode localiza la
+quieres mejor colocada, **arrástrala una vez desde la interfaz web de Drive**. GeodeDrive localiza la
 carpeta por su file id, de modo que el movimiento le resulta transparente; y si algún día pierdes
 `data.json`, la búsqueda de respaldo va por nombre y sin restricción de padre, así que la encontrará
 donde la hayas puesto.

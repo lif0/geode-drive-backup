@@ -31,5 +31,10 @@ jobs:
       - name: Test
         run: npm run test
 
+      # The recovery tool shares no code with the plugin. Running it against the
+      # same vectors is what proves the two implementations agree.
+      - name: Verify golden vectors against the standalone decryptor
+        run: npm run verify:vectors
+
       - name: Check formatting
         run: npm run format:check

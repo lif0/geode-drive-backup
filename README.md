@@ -67,21 +67,40 @@ Geode never routes your notes through a third party, so you supply the Google cr
 a one-time, ten-minute job.
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/) and create a project.
-2. **APIs & Services → Library** → enable **Google Drive API**.
-3. **APIs & Services → OAuth consent screen** → choose _External_, fill in the required fields, and
-   add your own Google account under **Test users**. You do not need to publish the app or submit
-   it for review.
-4. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
-   Choose application type **TVs and Limited Input devices**.
-5. Copy the **Client ID** and **Client secret**.
-6. In Obsidian: _Settings → Geode_ → paste both, then press **Connect**.
-7. A dialog shows a short code and a URL. Open the URL on any device you can type on, enter the
+2. **APIs & Services → Library** → enable the **Google Drive API**.
+3. **APIs & Services → OAuth consent screen**. In the current console this opens **Google Auth
+   Platform**. Press **Get started** and fill in the app name, your address as the support email,
+   **Audience: External**, and your address again as contact information.
+4. Open the **Audience** tab and press **Publish app**, so the status reads _In production_.
+   Read the box below before skipping this — for a backup tool it is not optional.
+5. Open the **Clients** tab → **Create client** → application type
+   **TVs and Limited Input devices** → give it a name → **Create**.
+6. Copy the **Client ID** and **Client secret**.
+7. In Obsidian: _Settings → Geode_ → paste both, then press **Connect**.
+8. A dialog shows a short code and a URL. Open the URL on any device you can type on, enter the
    code, approve access. The dialog closes by itself.
+
+> [!IMPORTANT]
+> **Do not leave the app in _Testing_.** Google issues every External app whose publishing status is
+> _Testing_ a refresh token that expires after **7 days**. Geode would then fail with "Google revoked
+> this connection" once a week, forever. **Publish app** fixes it permanently.
+>
+> Publishing costs nothing here. You remain the only user, and `drive.file` is a **non-sensitive**
+> scope — it needs no review submission and no security assessment. If the consent screen warns that
+> the app is unverified, that is expected for an app only you use: open **Advanced** and continue.
+>
+> If you deliberately keep the app in _Testing_, add your own account under **Audience → Test
+> users** first. That section only exists while the status is _Testing_, which is why you will not
+> find it after publishing.
 
 Geode requests exactly one scope: `https://www.googleapis.com/auth/drive.file`. That grants access
 only to files this plugin created — it cannot read anything else in your Drive. The broader `drive`
 scope is never requested; it is a restricted scope requiring a paid security assessment, and a
 backup tool has no business with it.
+
+A published token still lapses if you revoke it at
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions), or if six months pass
+without a single push or pull.
 
 > **Sign-in fails with "device flow not supported"?**
 > Your client is the wrong type. Either recreate it as _TVs and Limited Input devices_, or switch
@@ -264,6 +283,15 @@ Geode/
 The path lives in the file name because Drive's `appProperties` cap at roughly 124 bytes per
 key/value pair, which any non-ASCII path overflows. `appProperties` carries only `{ v, enc }`.
 
+Every upload names that folder as its parent, so nothing Geode writes can land anywhere else — and
+`drive.file` means it cannot even see the rest of your Drive.
+
+The folder is created in the root of My Drive, and the plugin offers no way to choose somewhere
+else: with `drive.file` it has no visibility into your folder tree, so it has no parent id to write.
+If you want it filed somewhere tidier, **drag it there once in the Drive web UI**. Geode addresses
+the folder by its file id, so the move is invisible to it; and if `data.json` is ever lost, the
+fallback lookup searches by name with no parent constraint and finds it wherever you put it.
+
 ---
 
 ## Settings reference
@@ -321,6 +349,39 @@ Two rules the build enforces mechanically rather than by convention:
 
 Try it: put `Buffer.from('x')` in any file under `src/` and both `npm run typecheck` and
 `npm run lint` will reject it.
+
+---
+
+## Releasing
+
+Two commands:
+
+```bash
+npm version patch     # or minor / major
+git push --follow-tags
+```
+
+`npm version` bumps `package.json`, then the `version` lifecycle script syncs `manifest.json` and
+appends the new entry to `versions.json`, and all three land in the version commit. Pushing the tag
+triggers [`release.yml`](.github/workflows/release.yml), which re-runs typecheck, lint, tests and
+the golden vectors, builds `main.js`, and publishes a GitHub Release with generated notes.
+
+Three details that are easy to get wrong and expensive to debug:
+
+- **The tag must not have a `v` prefix.** Obsidian matches a release by a tag exactly equal to
+  `manifest.json`'s version, so it has to be `1.2.3`, not `v1.2.3`. [`.npmrc`](.npmrc) sets
+  `tag-version-prefix=""` so `npm version` produces the right one by default.
+- **Assets are uploaded individually, never zipped.** Obsidian's installer fetches `main.js` and
+  `manifest.json` straight off the release; a `.zip` is invisible to it.
+- **`versions.json` lives on the default branch, not in the release.** It maps plugin version to
+  minimum Obsidian version, and it is how older clients are offered the last build they can run.
+
+The workflow refuses to publish if the tag disagrees with `manifest.json`, `package.json` or
+`versions.json`, and if the built bundle contains a Node builtin. A release that is wrong in those
+ways looks fine on GitHub and simply never reaches users.
+
+To raise the minimum Obsidian version, edit `minAppVersion` in `manifest.json` **before** running
+`npm version` — the bump script copies whatever is there into `versions.json`.
 
 ---
 

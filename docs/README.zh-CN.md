@@ -66,18 +66,37 @@ Geode 绝不会让你的笔记经过任何第三方，所以 Google 凭据由你
 
 1. 打开 [Google Cloud Console](https://console.cloud.google.com/) 并创建一个项目。
 2. **APIs & Services → Library** → 启用 **Google Drive API**。
-3. **APIs & Services → OAuth consent screen** → 选择 _External_，填写必填项，并把你自己的 Google
-   账号加入 **Test users**。无需发布应用，也无需提交审核。
-4. **APIs & Services → Credentials → Create credentials → OAuth client ID**。
-   应用类型选择 **TVs and Limited Input devices**。
-5. 复制 **Client ID** 和 **Client secret**。
-6. 在 Obsidian 中：_Settings → Geode_ → 粘贴这两项，然后点击 **Connect**。
-7. 弹窗会显示一个短代码和一个网址。在任何方便打字的设备上打开该网址，输入代码并授权。弹窗会自动
+3. **APIs & Services → OAuth consent screen**。在当前版本的控制台中，这会打开 **Google Auth
+   Platform**。点击 **Get started**，填写应用名称、用作 support email 的你的邮箱、
+   **Audience: External**，以及再次填入你的邮箱作为联系方式。
+4. 打开 **Audience** 标签页并点击 **Publish app**，让状态变为 _In production_。
+   跳过这一步之前请先读下面的提示框——对备份工具来说它不是可选项。
+5. 打开 **Clients** 标签页 → **Create client** → 应用类型选择
+   **TVs and Limited Input devices** → 起个名字 → **Create**。
+6. 复制 **Client ID** 和 **Client secret**。
+7. 在 Obsidian 中：_Settings → Geode_ → 粘贴这两项，然后点击 **Connect**。
+8. 弹窗会显示一个短代码和一个网址。在任何方便打字的设备上打开该网址，输入代码并授权。弹窗会自动
    关闭。
+
+> [!IMPORTANT]
+> **不要把应用留在 _Testing_ 状态。** 对于发布状态为 _Testing_ 的 External 应用，Google 签发的
+> refresh token 会在 **7 天**后失效。此后 Geode 每周都会以 “Google revoked this connection” 失败，
+> 永远如此。点击 **Publish app** 可以一劳永逸地解决。
+>
+> 在这里发布不需要任何代价。你仍然是唯一的用户，而 `drive.file` 属于 **non-sensitive** 权限——既不
+> 需要提交审核，也不需要安全评估。如果同意页面提示应用未经验证，对于只有你自己使用的应用这很正常：
+> 展开 **Advanced** 继续即可。
+>
+> 如果你确实想保持 _Testing_ 状态，请先在 **Audience → Test users** 中添加自己的账号。该栏目只在
+> 状态为 _Testing_ 时存在——这也是发布之后你找不到它的原因。
 
 Geode 只申请一个权限范围：`https://www.googleapis.com/auth/drive.file`。它只能访问本插件自己创建
 的文件——无法读取你 Drive 中的任何其他内容。范围更大的 `drive` 权限永远不会被申请：那是受限权限，
 需要付费的安全评估，而一个备份工具不该碰它。
+
+即使已发布，令牌在下列情况下仍会失效：你在
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions) 撤销了授权，或者连续
+六个月没有执行过任何一次推送或拉取。
 
 > **登录失败，Google 拒绝 device flow？**
 > 说明你的客户端类型不对。要么重新创建为 _TVs and Limited Input devices_，要么在设置中把
@@ -244,6 +263,14 @@ Geode/
 路径之所以存放在文件名里，是因为 Drive 的 `appProperties` 每个键/值对上限约为 124 字节，任何非
 ASCII 路径都会超出。`appProperties` 只携带 `{ v, enc }`。
 
+每次上传都会显式指定该文件夹为父目录，因此 Geode 写入的任何内容都不可能落到别处——而且
+`drive.file` 权限让插件根本看不到你 Drive 的其余部分。
+
+文件夹创建在「我的云端硬盘」根目录，插件不提供选择其他位置的方式：在 `drive.file` 权限下它看不到
+你的目录树，也就拿不到父目录的 id。如果你想把它放得整齐些，**在 Drive 网页端把它拖过去一次即可**。
+Geode 通过 file id 定位该文件夹，所以移动对它是透明的；即便 `data.json` 丢失，回退查找也是按名称
+搜索且不限定父目录，无论你把它放在哪里都能找到。
+
 ---
 
 ## 设置项参考
@@ -301,6 +328,38 @@ tools/           独立解密工具、向量生成器、版本号同步
 
 你可以自己试：在 `src/` 下的任意文件里写 `Buffer.from('x')`，`npm run typecheck` 和 `npm run lint`
 都会拒绝它。
+
+---
+
+## 发布版本
+
+两条命令：
+
+```bash
+npm version patch     # 或 minor / major
+git push --follow-tags
+```
+
+`npm version` 会提升 `package.json` 中的版本号，随后 `version` 生命周期脚本同步 `manifest.json`
+并向 `versions.json` 追加新条目，三个文件都会进入同一个版本提交。推送标签会触发
+[`release.yml`](../.github/workflows/release.yml)：它重新运行类型检查、lint、测试和黄金向量校验，
+构建 `main.js`，并发布带自动生成说明的 GitHub Release。
+
+三个容易弄错、排查起来又很费时的细节：
+
+- **标签不能带 `v` 前缀。** Obsidian 通过与 `manifest.json` 版本完全一致的标签来匹配发布，所以必须
+  是 `1.2.3` 而不是 `v1.2.3`。[`.npmrc`](../.npmrc) 中设置了 `tag-version-prefix=""`，因此
+  `npm version` 默认就会生成正确的标签。
+- **附件要逐个上传，绝不能打包成 zip。** Obsidian 的安装器直接从发布页获取 `main.js` 和
+  `manifest.json`；`.zip` 对它来说等于不存在。
+- **`versions.json` 位于默认分支，而不在发布附件里。** 它把插件版本映射到最低 Obsidian 版本，正是
+  靠它，旧客户端才会被推荐它们还能运行的最后一个版本。
+
+如果标签与 `manifest.json`、`package.json` 或 `versions.json` 不一致，或者构建产物中出现了
+Node API，workflow 会拒绝发布。这类出错的发布在 GitHub 上看起来一切正常，只是永远到不了用户手里。
+
+要提高最低 Obsidian 版本，请在运行 `npm version` **之前**修改 `manifest.json` 中的
+`minAppVersion`——版本脚本会把当时的值原样写入 `versions.json`。
 
 ---
 

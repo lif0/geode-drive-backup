@@ -72,20 +72,42 @@ un trabajo de una sola vez, unos diez minutos.
 
 1. Abre la [Google Cloud Console](https://console.cloud.google.com/) y crea un proyecto.
 2. **APIs & Services → Library** → activa la **Google Drive API**.
-3. **APIs & Services → OAuth consent screen** → elige _External_, rellena los campos obligatorios y
-   añade tu propia cuenta de Google en **Test users**. No hace falta publicar la app ni enviarla a
-   revisión.
-4. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
-   Elige el tipo de aplicación **TVs and Limited Input devices**.
-5. Copia el **Client ID** y el **Client secret**.
-6. En Obsidian: _Settings → Geode_ → pega ambos y pulsa **Connect**.
-7. Un diálogo mostrará un código corto y una URL. Abre la URL en cualquier dispositivo donde puedas
+3. **APIs & Services → OAuth consent screen**. En la consola actual esto abre **Google Auth
+   Platform**. Pulsa **Get started** y rellena el nombre de la app, tu dirección como support email,
+   **Audience: External** y tu dirección otra vez como información de contacto.
+4. Abre la pestaña **Audience** y pulsa **Publish app**, de modo que el estado sea _In production_.
+   Lee el aviso de abajo antes de saltarte este paso: en una herramienta de copias de seguridad no
+   es opcional.
+5. Abre la pestaña **Clients** → **Create client** → tipo de aplicación
+   **TVs and Limited Input devices** → ponle un nombre → **Create**.
+6. Copia el **Client ID** y el **Client secret**.
+7. En Obsidian: _Settings → Geode_ → pega ambos y pulsa **Connect**.
+8. Un diálogo mostrará un código corto y una URL. Abre la URL en cualquier dispositivo donde puedas
    escribir cómodamente, introduce el código y autoriza el acceso. El diálogo se cierra solo.
+
+> [!IMPORTANT]
+> **No dejes la app en _Testing_.** Google entrega a toda app External cuyo estado de publicación
+> sea _Testing_ un refresh token que caduca a los **7 días**. A partir de ahí Geode fallaría con
+> «Google revoked this connection» una vez por semana, para siempre. **Publish app** lo arregla de
+> forma definitiva.
+>
+> Publicar aquí no cuesta nada. Sigues siendo el único usuario, y `drive.file` es un permiso
+> **non-sensitive**: no requiere enviar nada a revisión ni una auditoría de seguridad. Si la pantalla
+> de consentimiento avisa de que la app no está verificada, es lo esperable en una app que solo usas
+> tú: abre **Advanced** y continúa.
+>
+> Si decides mantenerla en _Testing_ a propósito, añade antes tu propia cuenta en
+> **Audience → Test users**. Esa sección solo existe mientras el estado es _Testing_, y por eso no la
+> encontrarás después de publicar.
 
 Geode solicita exactamente un permiso: `https://www.googleapis.com/auth/drive.file`. Solo da acceso
 a los archivos que ha creado este plugin; no puede leer nada más de tu Drive. El permiso amplio
 `drive` no se solicita nunca: es un permiso restringido que exige una auditoría de seguridad de
 pago, y una herramienta de copias de seguridad no tiene nada que hacer ahí.
+
+Un token ya publicado deja de valer igualmente si revocas el acceso en
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions) o si pasan seis meses
+sin un solo push ni pull.
 
 > **¿El inicio de sesión falla y Google rechaza el device flow?**
 > Tu cliente es del tipo equivocado. O bien lo vuelves a crear como _TVs and Limited Input
@@ -278,6 +300,16 @@ La ruta vive en el nombre del archivo porque las `appProperties` de Drive están
 bytes por par clave/valor, y cualquier ruta no ASCII se pasa de ahí. Las `appProperties` solo llevan
 `{ v, enc }`.
 
+Cada subida indica esa carpeta como padre, así que nada de lo que escribe Geode puede acabar en otro
+sitio; y con `drive.file` ni siquiera puede ver el resto de tu Drive.
+
+La carpeta se crea en la raíz de Mi unidad, y el plugin no ofrece forma de elegir otro sitio: con
+`drive.file` no ve tu árbol de carpetas, así que no tiene ningún id de padre que escribir. Si la
+quieres mejor colocada, **arrástrala una vez desde la interfaz web de Drive**. Geode localiza la
+carpeta por su file id, de modo que el movimiento le resulta transparente; y si algún día pierdes
+`data.json`, la búsqueda de respaldo va por nombre y sin restricción de padre, así que la encontrará
+donde la hayas puesto.
+
 ---
 
 ## Referencia de ajustes
@@ -336,6 +368,41 @@ Dos reglas que la compilación impone de forma mecánica, no por convención:
 
 Pruébalo: pon `Buffer.from('x')` en cualquier archivo bajo `src/` y tanto `npm run typecheck` como
 `npm run lint` lo rechazarán.
+
+---
+
+## Publicar una release
+
+Dos comandos:
+
+```bash
+npm version patch     # o minor / major
+git push --follow-tags
+```
+
+`npm version` sube la versión en `package.json`, después el script de ciclo de vida `version`
+sincroniza `manifest.json` y añade la nueva entrada a `versions.json`; los tres archivos acaban en el
+mismo commit. Al empujar la etiqueta se dispara
+[`release.yml`](../.github/workflows/release.yml), que vuelve a ejecutar typecheck, lint, tests y los
+vectores de referencia, compila `main.js` y publica una GitHub Release con notas generadas.
+
+Tres detalles fáciles de equivocar y caros de depurar:
+
+- **La etiqueta no debe llevar el prefijo `v`.** Obsidian localiza una release por una etiqueta
+  exactamente igual a la versión de `manifest.json`, así que tiene que ser `1.2.3`, no `v1.2.3`. En
+  [`.npmrc`](../.npmrc) está `tag-version-prefix=""`, de modo que `npm version` ya genera la correcta.
+- **Los archivos se suben por separado, nunca comprimidos.** El instalador de Obsidian descarga
+  `main.js` y `manifest.json` directamente de la release; un `.zip` le resulta invisible.
+- **`versions.json` vive en la rama principal, no en la release.** Asocia cada versión del plugin con
+  la versión mínima de Obsidian, y es así como a los clientes antiguos se les ofrece la última
+  compilación que pueden ejecutar.
+
+El workflow se niega a publicar si la etiqueta no concuerda con `manifest.json`, `package.json` o
+`versions.json`, y también si el bundle compilado contiene una API de Node. Una release equivocada
+de esa forma se ve perfecta en GitHub y sencillamente nunca llega a los usuarios.
+
+Para subir la versión mínima de Obsidian, edita `minAppVersion` en `manifest.json` **antes** de
+ejecutar `npm version`: el script copia en `versions.json` el valor que encuentre.
 
 ---
 

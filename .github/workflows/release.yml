@@ -1,0 +1,81 @@
+name: Release
+
+# Obsidian looks for a release whose tag is EXACTLY the manifest version, with no
+# `v` prefix. .npmrc sets tag-version-prefix="" so `npm version` produces that.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # A tag that disagrees with manifest.json produces a release Obsidian will
+      # never offer as an update, and the mismatch is invisible until users report
+      # it. Fail here instead.
+      - name: Verify the tag agrees with manifest.json, package.json and versions.json
+        run: |
+          tag="$GITHUB_REF_NAME"
+          manifest=$(node -p "require('./manifest.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          minApp=$(node -p "require('./manifest.json').minAppVersion")
+          mapped=$(node -p "require('./versions.json')['$tag'] ?? ''")
+
+          status=0
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag '$tag' != manifest.json version '$manifest'"
+            status=1
+          fi
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag '$tag' != package.json version '$pkg'"
+            status=1
+          fi
+          if [ "$mapped" != "$minApp" ]; then
+            echo "::error::versions.json['$tag'] is '$mapped', expected minAppVersion '$minApp'"
+            status=1
+          fi
+          exit $status
+
+      # Same gate as CI: typecheck, lint, tests, then the production bundle.
+      - name: Build
+        run: npm run build
+
+      - name: Verify golden vectors against the standalone decryptor
+        run: npm run verify:vectors
+
+      - name: Check the bundle carries no Node APIs
+        run: |
+          if grep -qE 'require\("(fs|path|crypto|os|node:)' main.js; then
+            echo "::error::main.js references a Node builtin — it would break on mobile"
+            exit 1
+          fi
+          test -s main.js
+
+      # Assets must be uploaded individually. Obsidian's installer fetches
+      # main.js and manifest.json straight off the release; a .zip is invisible to it.
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          assets="main.js manifest.json"
+          [ -f styles.css ] && assets="$assets styles.css"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $assets

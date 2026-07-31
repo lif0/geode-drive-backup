@@ -90,6 +90,9 @@ Geode 绝不会让你的笔记经过任何第三方，所以 Google 凭据由你
 > 如果你确实想保持 _Testing_ 状态，请先在 **Audience → Test users** 中添加自己的账号。该栏目只在
 > 状态为 _Testing_ 时存在——这也是发布之后你找不到它的原因。
 
+为什么客户端类型的名字这么奇怪、为什么要你自己创建客户端、以及为什么发布是安全的：
+[docs/auth-design.md](auth-design.md)（英文）。
+
 Geode 只申请一个权限范围：`https://www.googleapis.com/auth/drive.file`。它只能访问本插件自己创建
 的文件——无法读取你 Drive 中的任何其他内容。范围更大的 `drive` 权限永远不会被申请：那是受限权限，
 需要付费的安全评估，而一个备份工具不该碰它。

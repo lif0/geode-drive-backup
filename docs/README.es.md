@@ -100,6 +100,9 @@ un trabajo de una sola vez, unos diez minutos.
 > **Audience → Test users**. Esa sección solo existe mientras el estado es _Testing_, y por eso no la
 > encontrarás después de publicar.
 
+Por qué el tipo de cliente se llama así, por qué creas tú el cliente y por qué publicar es seguro:
+[docs/auth-design.md](auth-design.md) (en inglés).
+
 Geode solicita exactamente un permiso: `https://www.googleapis.com/auth/drive.file`. Solo da acceso
 a los archivos que ha creado este plugin; no puede leer nada más de tu Drive. El permiso amplio
 `drive` no se solicita nunca: es un permiso restringido que exige una auditoría de seguridad de

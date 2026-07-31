@@ -93,6 +93,9 @@ a one-time, ten-minute job.
 > users** first. That section only exists while the status is _Testing_, which is why you will not
 > find it after publishing.
 
+Why that odd client type, why you make your own client, and why publishing is safe:
+[docs/auth-design.md](docs/auth-design.md).
+
 Geode requests exactly one scope: `https://www.googleapis.com/auth/drive.file`. That grants access
 only to files this plugin created — it cannot read anything else in your Drive. The broader `drive`
 scope is never requested; it is a restricted scope requiring a paid security assessment, and a

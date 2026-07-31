@@ -83,7 +83,8 @@ export function planPush(
   const sortedLocal = [...local].sort((a, b) => comparePaths(a.path, b.path));
 
   for (const file of sortedLocal) {
-    const encrypt = options.encryptionEnabled && shouldEncrypt(file.path, options.encryptedPrefixes);
+    const encrypt =
+      options.encryptionEnabled && shouldEncrypt(file.path, options.encryptedPrefixes);
     const entry = index[file.path];
     const remoteFile = remoteByPath.get(file.path);
 

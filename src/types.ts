@@ -119,14 +119,13 @@ export type CancelledError = ErrorShape<'cancelled'>;
 
 /** Every failure Geode can report. */
 export type AppError =
-  | AuthError
-  | NetworkError
-  | CryptoError
-  | IoError
-  | ConflictError
-  | CancelledError;
+  AuthError | NetworkError | CryptoError | IoError | ConflictError | CancelledError;
 
-function makeError<K extends AppErrorKind>(kind: K, message: string, cause?: unknown): ErrorShape<K> {
+function makeError<K extends AppErrorKind>(
+  kind: K,
+  message: string,
+  cause?: unknown,
+): ErrorShape<K> {
   return cause === undefined ? { kind, message } : { kind, message, cause };
 }
 
@@ -248,10 +247,7 @@ export interface RemoteFile {
 
 /** Why a file was left alone. */
 export type SkipReason =
-  | 'unchanged'
-  | 'remote-changed-locally-unchanged'
-  | 'deleted-locally'
-  | 'already-identical';
+  'unchanged' | 'remote-changed-locally-unchanged' | 'deleted-locally' | 'already-identical';
 
 /** One step of a push. Produced by planPush, executed by ops/push.ts. */
 export type PushAction =

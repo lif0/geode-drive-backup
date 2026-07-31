@@ -77,7 +77,12 @@ async function collectLocalFiles(deps: PullDeps): Promise<LocalFile[]> {
     } catch {
       // An unreadable local file just means the planner treats its path as
       // occupied, which is the safe answer: the download lands beside it.
-      files.push({ path: stat.path, sha256: await hashBytes(deps.crypto, new Uint8Array(0)), mtime: stat.mtime, size: stat.size });
+      files.push({
+        path: stat.path,
+        sha256: await hashBytes(deps.crypto, new Uint8Array(0)),
+        mtime: stat.mtime,
+        size: stat.size,
+      });
     }
     deps.progress.advance(stat.path);
   }

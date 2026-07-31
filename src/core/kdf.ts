@@ -33,17 +33,15 @@ export async function deriveKey(
   salt: Bytes,
 ): Promise<Result<CryptoKey>> {
   if (salt.length !== SALT_LENGTH) {
-    return err(cryptoError(`Salt must be ${String(SALT_LENGTH)} bytes, got ${String(salt.length)}.`));
+    return err(
+      cryptoError(`Salt must be ${String(SALT_LENGTH)} bytes, got ${String(salt.length)}.`),
+    );
   }
 
   try {
-    const material = await crypto.subtle.importKey(
-      'raw',
-      utf8Encode(passphrase),
-      'PBKDF2',
-      false,
-      ['deriveKey'],
-    );
+    const material = await crypto.subtle.importKey('raw', utf8Encode(passphrase), 'PBKDF2', false, [
+      'deriveKey',
+    ]);
 
     const key = await crypto.subtle.deriveKey(
       { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },

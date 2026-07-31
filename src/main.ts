@@ -37,9 +37,21 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
     this.addSettingTab(new GeodeSettingTab(this.app, this, this));
 
-    this.addCommand({ id: 'push', name: 'Push changes to Drive', callback: () => void this.push() });
-    this.addCommand({ id: 'pull', name: 'Pull vault from Drive', callback: () => void this.pull() });
-    this.addCommand({ id: 'unlock', name: 'Unlock encryption', callback: () => void this.unlock() });
+    this.addCommand({
+      id: 'push',
+      name: 'Push changes to Drive',
+      callback: () => void this.push(),
+    });
+    this.addCommand({
+      id: 'pull',
+      name: 'Pull vault from Drive',
+      callback: () => void this.pull(),
+    });
+    this.addCommand({
+      id: 'unlock',
+      name: 'Unlock encryption',
+      callback: () => void this.unlock(),
+    });
     this.addCommand({
       id: 'connect',
       name: 'Connect Google account',
@@ -135,7 +147,9 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
       this.settings.encryptionEnabled
         ? `Encryption on (${this.keys.isUnlocked() ? 'unlocked' : 'locked'}), ${String(this.settings.encryptedPrefixes.length)} path rules`
         : 'Encryption off',
-      this.settings.mirrorDeletions ? 'Deletions are mirrored to Drive.' : 'Deletions stay on Drive.',
+      this.settings.mirrorDeletions
+        ? 'Deletions are mirrored to Drive.'
+        : 'Deletions stay on Drive.',
     ];
     new Notice(`Geode\n${lines.join('\n')}`, 10_000);
   }

@@ -66,7 +66,9 @@ describe('golden vectors', () => {
     expect(vectors.version).toBe(1);
     expect(vectors.cases.length).toBeGreaterThanOrEqual(4);
 
-    const sizes = vectors.cases.map((testCase) => fromBase64(testCase.plaintextBase64)?.length ?? -1);
+    const sizes = vectors.cases.map(
+      (testCase) => fromBase64(testCase.plaintextBase64)?.length ?? -1,
+    );
     expect(sizes).toContain(0);
     expect(Math.max(...sizes)).toBeGreaterThanOrEqual(1024 * 1024);
   });

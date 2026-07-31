@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatPrefixList, matchingPrefixes, parsePrefixList, shouldEncrypt } from '../src/core/selector';
+import {
+  formatPrefixList,
+  matchingPrefixes,
+  parsePrefixList,
+  shouldEncrypt,
+} from '../src/core/selector';
 import { vaultPath } from '../src/types';
 
 const encrypts = (path: string, prefixes: string[]): boolean =>

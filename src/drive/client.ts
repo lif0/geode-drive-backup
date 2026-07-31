@@ -8,12 +8,7 @@ import type { Bytes, CryptoProvider, DriveFileId, DriveName, RemoteFile, Result 
 import { driveFileId, driveName, err, networkError, ok } from '../types';
 import type { AuthProvider } from './auth-provider';
 import type { DriveFileDto } from './dto';
-import {
-  describeErrorBody,
-  isDriveFileDto,
-  isDriveFileListDto,
-  parseJson,
-} from './dto';
+import { describeErrorBody, isDriveFileDto, isDriveFileListDto, parseJson } from './dto';
 
 /**
  * Google Drive REST v3, limited to what a backup needs.

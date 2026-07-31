@@ -138,17 +138,21 @@ describe('encrypt / decrypt', () => {
     expect(opened.value).toEqual(plaintext);
   });
 
-  it('produces a different container every time for the same input', { timeout: SLOW }, async () => {
-    const plaintext = utf8Encode('unchanged content');
-    const first = await encrypt(crypto, key, salt, plaintext);
-    const second = await encrypt(crypto, key, salt, plaintext);
-    if (!first.ok || !second.ok) throw new Error('encryption failed');
+  it(
+    'produces a different container every time for the same input',
+    { timeout: SLOW },
+    async () => {
+      const plaintext = utf8Encode('unchanged content');
+      const first = await encrypt(crypto, key, salt, plaintext);
+      const second = await encrypt(crypto, key, salt, plaintext);
+      if (!first.ok || !second.ok) throw new Error('encryption failed');
 
-    // The nonce is fresh each time. This is exactly why staleness is decided by
-    // the plaintext hash and never by comparing ciphertext or remote md5.
-    expect(first.value).not.toEqual(second.value);
-    expect(first.value.slice(21, 33)).not.toEqual(second.value.slice(21, 33));
-  });
+      // The nonce is fresh each time. This is exactly why staleness is decided by
+      // the plaintext hash and never by comparing ciphertext or remote md5.
+      expect(first.value).not.toEqual(second.value);
+      expect(first.value.slice(21, 33)).not.toEqual(second.value.slice(21, 33));
+    },
+  );
 
   it('embeds the salt it was given', { timeout: SLOW }, async () => {
     const sealed = await encrypt(crypto, key, salt, utf8Encode('x'));

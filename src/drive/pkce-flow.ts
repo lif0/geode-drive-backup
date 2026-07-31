@@ -2,7 +2,13 @@ import { toBase64Url, utf8Encode } from '../core/bytes';
 import type { CryptoProvider, Result } from '../types';
 import { authError, cancelledError, err } from '../types';
 import type { OAuthClient, RefreshTokenStore } from './auth-provider';
-import { CachingAuthProvider, DRIVE_SCOPE, TOKEN_ENDPOINT, postForm, readGrantResponse } from './auth-provider';
+import {
+  CachingAuthProvider,
+  DRIVE_SCOPE,
+  TOKEN_ENDPOINT,
+  postForm,
+  readGrantResponse,
+} from './auth-provider';
 
 /**
  * Installed-app redirect flow with PKCE. The fallback when Google refuses the

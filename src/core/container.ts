@@ -67,11 +67,7 @@ export function isContainer(bytes: Bytes): boolean {
  * Does NOT check that `ciphertext` was produced with `nonce`; passing mismatched
  * parts produces a container that fails to decrypt.
  */
-export function encodeContainer(
-  salt: Bytes,
-  nonce: Bytes,
-  ciphertext: Bytes,
-): Result<Bytes> {
+export function encodeContainer(salt: Bytes, nonce: Bytes, ciphertext: Bytes): Result<Bytes> {
   if (salt.length !== SALT_LENGTH) {
     return err(cryptoError(`Salt must be ${String(SALT_LENGTH)} bytes.`));
   }

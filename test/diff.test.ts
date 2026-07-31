@@ -211,9 +211,7 @@ describe('planPush', () => {
 
     it('deletes the Drive copy when mirroring is switched on', () => {
       const plan = planPush([], state, drive, { ...PLAIN, mirrorDeletions: true });
-      expect(plan.actions).toEqual([
-        { type: 'delete-remote', path: 'gone.md', fileId: 'drive-9' },
-      ]);
+      expect(plan.actions).toEqual([{ type: 'delete-remote', path: 'gone.md', fileId: 'drive-9' }]);
     });
 
     it('says nothing about a file already gone from both sides', () => {
@@ -300,7 +298,11 @@ describe('planPull', () => {
   });
 
   it('numbers repeated collisions instead of clobbering the first copy', () => {
-    const plan = planPull([remote('a.md'), remote('a.md'), remote('a.md')], [local('a.md')], index({}));
+    const plan = planPull(
+      [remote('a.md'), remote('a.md'), remote('a.md')],
+      [local('a.md')],
+      index({}),
+    );
     expect(plan.actions.map((action) => (action.type === 'skip' ? null : action.writeTo))).toEqual([
       'a (from drive).md',
       'a (from drive 2).md',

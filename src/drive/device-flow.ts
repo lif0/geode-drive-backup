@@ -1,7 +1,13 @@
 import type { Result } from '../types';
 import { authError, cancelledError, err, ok } from '../types';
 import type { OAuthClient, RefreshTokenStore } from './auth-provider';
-import { CachingAuthProvider, DRIVE_SCOPE, TOKEN_ENDPOINT, postForm, readGrantResponse } from './auth-provider';
+import {
+  CachingAuthProvider,
+  DRIVE_SCOPE,
+  TOKEN_ENDPOINT,
+  postForm,
+  readGrantResponse,
+} from './auth-provider';
 import type { DeviceCodeDto } from './dto';
 import { describeErrorBody, isDeviceCodeDto, isOAuthErrorDto, readVerificationUrl } from './dto';
 
@@ -128,9 +134,7 @@ export class DeviceFlowAuthProvider extends CachingAuthProvider {
     deviceCode: string,
     initialInterval: number,
     expiresInSeconds: number,
-  ): Promise<
-    Result<{ refreshToken: string | undefined; accessToken: string; expiresIn: number }>
-  > {
+  ): Promise<Result<{ refreshToken: string | undefined; accessToken: string; expiresIn: number }>> {
     let intervalSeconds = Math.max(initialInterval, 1);
     const deadline = Date.now() + expiresInSeconds * 1000;
 
@@ -171,9 +175,7 @@ export class DeviceFlowAuthProvider extends CachingAuthProvider {
         case 'access_denied':
           return err(cancelledError('Sign-in was denied in the browser.'));
         default:
-          return err(
-            authError(`Sign-in failed: ${describeErrorBody(body, outcome.value.text)}`),
-          );
+          return err(authError(`Sign-in failed: ${describeErrorBody(body, outcome.value.text)}`));
       }
     }
 

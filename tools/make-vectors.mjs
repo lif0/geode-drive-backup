@@ -106,7 +106,9 @@ const cases = [
     passphrase: 'correct horse battery staple',
     saltHex: '0f0e0d0c0b0a09080706050403020100',
     nonceHex: 'b0b1b2b3b4b5b6b7b8b9babb',
-    plaintext: new TextEncoder().encode('# Hello\n\nThe quick brown fox jumps over the lazy dog.\n'),
+    plaintext: new TextEncoder().encode(
+      '# Hello\n\nThe quick brown fox jumps over the lazy dog.\n',
+    ),
   },
   {
     name: 'utf-8 with cyrillic and emoji',

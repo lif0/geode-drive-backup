@@ -201,3 +201,25 @@ export function toArrayBuffer(bytes: Bytes): ArrayBuffer {
   copy.set(bytes);
   return copy.buffer;
 }
+
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+/**
+ * A byte count as a person reads it: `512 B`, `4.1 MB`, `1.2 GB`.
+ *
+ * Powers of 1024 with the short names, because that is what every file manager
+ * the user has ever seen does, whatever the standard has to say about it.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+
+  // Whole bytes never want a decimal; anything scaled reads better with one.
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${BYTE_UNITS[unit] ?? 'B'}`;
+}

@@ -14,7 +14,7 @@ import type {
   Result,
   VaultPath,
 } from '../types';
-import { driveFileId, driveName, err, networkError, ok, vaultPath } from '../types';
+import { cancelledError, driveFileId, driveName, err, networkError, ok, vaultPath } from '../types';
 import type { AuthProvider } from './auth-provider';
 import type { DriveFileDto } from './dto';
 import {
@@ -80,6 +80,27 @@ const BACKOFF_SLICE_MS = 250;
  */
 const MULTIPART_MAX_BYTES = 5 * 1024 * 1024;
 
+/**
+ * How much of a big file moves per request.
+ *
+ * `requestUrl` is a single await with no progress events, so a file sent in one
+ * request tells the user nothing between "started" and "finished". Sending it in
+ * pieces is what turns a frozen bar into a moving one — and it lets Cancel take
+ * effect inside a single large file instead of only between files.
+ *
+ * Drive requires every resumable chunk but the last to be a multiple of 256 KB.
+ * Downloads have no such rule and take a larger bite, since a `Range` request
+ * costs a round trip and buys less: a download that stalls is obvious anyway.
+ */
+const UPLOAD_CHUNK_BYTES = 1024 * 1024;
+const DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/** Below this, one request is both faster and honest. Nothing to report. */
+const CHUNK_THRESHOLD_BYTES = MULTIPART_MAX_BYTES;
+
+/** Told how many bytes have crossed so far. Never called with a decrease. */
+export type TransferProgress = (bytesDone: number) => void;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -101,6 +122,21 @@ function retryAfterMs(response: RequestUrlResponse): number | null {
   const seconds = Number.parseInt(raw.trim(), 10);
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return seconds * 1000;
+}
+
+/**
+ * How much of a resumable upload Drive says it has, from the `Range` header of
+ * a 308. Null when it did not say, in which case the sender's own count stands.
+ */
+function resumeOffset(response: RequestUrlResponse): number | null {
+  const raw = headerValue(response.headers, 'range');
+  if (raw === null) return null;
+
+  const match = /bytes=\d+-(\d+)/.exec(raw);
+  if (match === null) return null;
+
+  const last = Number.parseInt(match[1] ?? '', 10);
+  return Number.isFinite(last) ? last + 1 : null;
 }
 
 /** True when the status — and for 403, the reason — says to try again. */
@@ -447,17 +483,75 @@ export class DriveClient {
     });
   }
 
-  /** Downloads a file's bytes. */
-  async download(fileId: DriveFileId): Promise<Result<Bytes>> {
-    const response = await this.send({
-      url: buildUrl(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`, { alt: 'media' }),
-      method: 'GET',
-    });
-    if (!response.ok) return response;
-    if (response.value.status < 200 || response.value.status >= 300) {
-      return DriveClient.failure(response.value, 'Downloading a file');
+  /**
+   * Downloads a file's bytes.
+   *
+   * `totalBytes` comes from the folder listing. Given one, a large file is
+   * fetched in ranged pieces so that progress can be reported and Cancel can
+   * take effect part-way through; without one — the keycheck file, whose size
+   * nobody tracks — it is fetched in a single request.
+   */
+  async download(
+    fileId: DriveFileId,
+    totalBytes = 0,
+    onProgress?: TransferProgress,
+  ): Promise<Result<Bytes>> {
+    const url = buildUrl(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`, { alt: 'media' });
+
+    if (totalBytes <= CHUNK_THRESHOLD_BYTES) {
+      const response = await this.send({ url, method: 'GET' });
+      if (!response.ok) return response;
+      if (response.value.status < 200 || response.value.status >= 300) {
+        return DriveClient.failure(response.value, 'Downloading a file');
+      }
+      const bytes = new Uint8Array(response.value.arrayBuffer);
+      onProgress?.(bytes.length);
+      return ok(bytes);
     }
-    return ok(new Uint8Array(response.value.arrayBuffer));
+
+    const parts: Bytes[] = [];
+    let received = 0;
+
+    while (received < totalBytes) {
+      if (this.cancellation?.isCancelled() === true) {
+        return err(cancelledError('Download stopped.'));
+      }
+
+      const last = Math.min(received + DOWNLOAD_CHUNK_BYTES, totalBytes) - 1;
+      const response = await this.send({
+        url,
+        method: 'GET',
+        headers: { Range: `bytes=${String(received)}-${String(last)}` },
+      });
+      if (!response.ok) return response;
+
+      const status = response.value.status;
+      if (status !== 200 && status !== 206) {
+        return DriveClient.failure(response.value, 'Downloading a file');
+      }
+
+      const bytes = new Uint8Array(response.value.arrayBuffer);
+
+      // 200 means the Range header was ignored and the whole file came back.
+      // That is a complete answer, so take it and stop asking.
+      if (status === 200) {
+        onProgress?.(bytes.length);
+        return ok(bytes);
+      }
+
+      // An empty piece before the end means the size we were given is not the
+      // size Drive holds. Concatenating what we have would write a truncated
+      // file into the vault, which is the one outcome a restore must not have.
+      if (bytes.length === 0) {
+        return err(networkError('Drive stopped sending a file before it was complete.'));
+      }
+
+      parts.push(bytes);
+      received += bytes.length;
+      onProgress?.(received);
+    }
+
+    return ok(concatBytes(...parts));
   }
 
   /**
@@ -492,11 +586,19 @@ export class DriveClient {
    * Uploads through a resumable session, which is the only supported route for
    * anything over 5 MB.
    *
-   * Two requests: one that hands Drive the metadata and gets back a session URL
-   * in the `Location` header, and one that puts the bytes there. The bytes go in
-   * a single PUT rather than in chunks — the whole file is already in memory,
-   * having been read and possibly encrypted there, so chunking would buy no
-   * headroom and cost a round trip per chunk.
+   * First a request that hands Drive the metadata and gets back a session URL in
+   * the `Location` header, then one PUT per chunk against that URL.
+   *
+   * Chunking does nothing for memory — the whole file is already in memory,
+   * having been read and possibly encrypted there. What it buys is the only
+   * mid-file progress available at all: `requestUrl` reports nothing until a
+   * request returns, so a file sent in one piece is a bar that sits still for a
+   * minute. It also lets Cancel land inside a large file rather than only
+   * between files.
+   *
+   * Drive answers each chunk but the last with 308 "Resume Incomplete" and a
+   * `Range` header saying how much it has. That is the authority on where to
+   * carry on from, not our own count.
    */
   private async uploadResumable(
     method: 'POST' | 'PATCH',
@@ -504,6 +606,7 @@ export class DriveClient {
     metadata: Record<string, unknown>,
     content: Bytes,
     what: string,
+    onProgress?: TransferProgress,
   ): Promise<Result<DriveFileDto>> {
     const opened = await this.send({
       url,
@@ -525,15 +628,46 @@ export class DriveClient {
       return err(networkError(`${what} failed: Drive did not open an upload session.`));
     }
 
-    return this.sendForFile(
-      {
+    let offset = 0;
+    while (offset < content.length) {
+      if (this.cancellation?.isCancelled() === true) {
+        return err(cancelledError(`${what} stopped.`));
+      }
+
+      const end = Math.min(offset + UPLOAD_CHUNK_BYTES, content.length);
+      const sent = await this.send({
         url: session,
         method: 'PUT',
         contentType: 'application/octet-stream',
-        body: toArrayBuffer(content),
-      },
-      what,
-    );
+        headers: {
+          'Content-Range': `bytes ${String(offset)}-${String(end - 1)}/${String(content.length)}`,
+        },
+        body: toArrayBuffer(content.subarray(offset, end)),
+      });
+      if (!sent.ok) return sent;
+
+      const status = sent.value.status;
+
+      // Not a redirect, whatever the number says: Drive means "send the rest".
+      if (status === 308) {
+        offset = resumeOffset(sent.value) ?? end;
+        onProgress?.(offset);
+        continue;
+      }
+
+      if (status < 200 || status >= 300) return DriveClient.failure(sent.value, what);
+
+      onProgress?.(content.length);
+      const body = parseJson(sent.value.text);
+      if (!isDriveFileDto(body)) {
+        return err(networkError(`${what} returned a response Geode could not read.`));
+      }
+      return ok(body);
+    }
+
+    // Every chunk was accepted and none of them was the one that finishes the
+    // upload. Nothing was necessarily lost, but nothing is confirmed either.
+    return err(networkError(`${what} ended without Drive confirming the file.`));
   }
 
   /** Creates a new file in the folder. */
@@ -542,6 +676,7 @@ export class DriveClient {
     name: DriveName,
     content: Bytes,
     properties: GeodeAppProperties,
+    onProgress?: TransferProgress,
   ): Promise<Result<DriveFileDto>> {
     const metadata = { name, parents: [folderId], appProperties: properties };
     const what = `Uploading ${name}`;
@@ -553,11 +688,12 @@ export class DriveClient {
         metadata,
         content,
         what,
+        onProgress,
       );
     }
 
     const { body, contentType } = this.buildMultipart(metadata, content);
-    return this.sendForFile(
+    const uploaded = await this.sendForFile(
       {
         url: buildUrl(DRIVE_UPLOAD, { uploadType: 'multipart', fields: FILE_FIELDS }),
         method: 'POST',
@@ -566,10 +702,16 @@ export class DriveClient {
       },
       what,
     );
+    if (uploaded.ok) onProgress?.(content.length);
+    return uploaded;
   }
 
   /** Replaces an existing file's content, leaving its metadata alone. */
-  async updateContent(fileId: DriveFileId, content: Bytes): Promise<Result<DriveFileDto>> {
+  async updateContent(
+    fileId: DriveFileId,
+    content: Bytes,
+    onProgress?: TransferProgress,
+  ): Promise<Result<DriveFileDto>> {
     if (content.length > MULTIPART_MAX_BYTES) {
       return this.uploadResumable(
         'PATCH',
@@ -580,10 +722,11 @@ export class DriveClient {
         {},
         content,
         'Updating a file',
+        onProgress,
       );
     }
 
-    return this.sendForFile(
+    const updated = await this.sendForFile(
       {
         url: buildUrl(`${DRIVE_UPLOAD}/${encodeURIComponent(fileId)}`, {
           uploadType: 'media',
@@ -595,6 +738,8 @@ export class DriveClient {
       },
       'Updating a file',
     );
+    if (updated.ok) onProgress?.(content.length);
+    return updated;
   }
 
   /** Rewrites a file's appProperties. Only called when the encryption flag flips. */

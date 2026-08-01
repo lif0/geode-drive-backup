@@ -17,9 +17,10 @@ import type { CancellationToken, CryptoProvider, OperationSummary, Result, Vault
 import { vaultPath } from './types';
 import { DeviceCodeModal } from './ui/device-code-modal';
 import { PassphraseModal, PkceCodeModal } from './ui/passphrase-modal';
-import { NoticeProgress } from './ui/progress';
+import { ProgressHub, statusBarText } from './ui/progress';
 import type { ExclusionPreview, SettingsHost } from './ui/settings-tab';
 import { GeodeSettingTab } from './ui/settings-tab';
+import { GEODE_VIEW_TYPE, GeodeProgressView } from './ui/progress-view';
 
 /** Geode: back the vault up to Google Drive, and get it back on a new device. */
 export default class GeodePlugin extends Plugin implements SettingsHost {
@@ -33,6 +34,17 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   private busy = false;
   private cancelRequested = false;
 
+  /**
+   * One hub for the whole plugin lifetime, not one per run.
+   *
+   * The panel and the status bar subscribe to it at startup and stay
+   * subscribed, so closing either of them — or opening the panel halfway
+   * through a push — loses nothing.
+   */
+  private readonly progress = new ProgressHub(() => {
+    this.requestCancel();
+  });
+
   /** Read by the ops layer between files. Never interrupts a file mid-write. */
   private readonly cancellation: CancellationToken = {
     isCancelled: () => this.cancelRequested,
@@ -43,6 +55,17 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
     this.index = new IndexStore(this.settings.index, (stored) => this.persistIndex(stored));
 
     this.addSettingTab(new GeodeSettingTab(this.app, this, this));
+
+    this.registerView(GEODE_VIEW_TYPE, (leaf) => new GeodeProgressView(leaf, this.progress));
+    this.mountStatusBar();
+
+    this.addCommand({
+      id: 'show-progress',
+      name: 'Show progress panel',
+      callback: () => {
+        void this.openProgressPanel();
+      },
+    });
 
     this.addCommand({
       id: 'push',
@@ -89,24 +112,68 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
     this.keys.clear();
   }
 
+  /* -------------------------- progress surfaces --------------------------- */
+
+  /**
+   * The status bar line: a place to see a run that cannot be closed by accident.
+   *
+   * This is the fix for the whole class of problem. A Notice is dismissed by a
+   * click, and the click is usually meant for something behind it; the run then
+   * continued with no counter and no Cancel button. A status bar item has no
+   * dismiss gesture at all.
+   *
+   * Obsidian gives mobile no status bar, so the panel and the ribbon carry it
+   * there instead.
+   */
+  private mountStatusBar(): void {
+    const item = this.addStatusBarItem();
+    item.addClass('mod-clickable');
+    item.setAttribute('aria-label', 'GeodeDrive: open the progress panel');
+    item.addEventListener('click', () => {
+      void this.openProgressPanel();
+    });
+
+    this.register(
+      this.progress.subscribe((snapshot) => {
+        item.setText(statusBarText(snapshot));
+      }),
+    );
+  }
+
+  /** Opens the panel in the right sidebar, or reveals it if it is already there. */
+  private async openProgressPanel(): Promise<void> {
+    const { workspace } = this.app;
+
+    const open = workspace.getLeavesOfType(GEODE_VIEW_TYPE);
+    const existing = open[0];
+    if (existing !== undefined) {
+      await workspace.revealLeaf(existing);
+      return;
+    }
+
+    const leaf = workspace.getRightLeaf(false);
+    if (leaf === null) return;
+
+    await leaf.setViewState({ type: GEODE_VIEW_TYPE, active: true });
+    await workspace.revealLeaf(leaf);
+  }
+
   /* ------------------------------ operations ------------------------------ */
 
   private async push(): Promise<void> {
-    await this.run((progress) => runPush(this.operationDeps(progress)));
+    await this.run(() => runPush(this.operationDeps()));
   }
 
   private async pull(): Promise<void> {
     // PullDeps and PushDeps are structurally identical, so one wiring serves both.
-    await this.run((progress) => runPull(this.operationDeps(progress)));
+    await this.run(() => runPull(this.operationDeps()));
   }
 
   /**
    * One operation at a time. Two concurrent pushes would race on the index and
    * on the Drive folder, and the user has no way to see that happening.
    */
-  private async run(
-    operation: (progress: NoticeProgress) => Promise<Result<OperationSummary>>,
-  ): Promise<void> {
+  private async run(operation: () => Promise<Result<OperationSummary>>): Promise<void> {
     if (this.busy) {
       new Notice('GeodeDrive is already working. Wait for it to finish.');
       return;
@@ -114,26 +181,23 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
     this.busy = true;
     this.cancelRequested = false;
-    const progress = new NoticeProgress(() => {
-      this.requestCancel();
-    });
     try {
-      const result = await operation(progress);
-      if (result.ok) progress.done(result.value);
-      else progress.fail(result.error);
+      const result = await operation();
+      if (result.ok) this.progress.done(result.value);
+      else this.progress.fail(result.error);
     } finally {
       this.busy = false;
     }
   }
 
-  private operationDeps(progress: NoticeProgress): PushDeps {
+  private operationDeps(): PushDeps {
     return {
       vault: this.createVaultIo(),
       drive: new DriveClient(this.authProvider(), this.crypto, this.cancellation),
       crypto: this.crypto,
       index: this.index,
       keys: this.keys,
-      progress,
+      progress: this.progress,
       settings: this.settings,
       cancellation: this.cancellation,
       requestPassphrase: (isNewVault) =>

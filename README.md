@@ -118,8 +118,8 @@ demand.
 
 ## Usage
 
-Six commands from the command palette (`Ctrl/Cmd+P`), a ribbon icon for push, and **Push now** /
-**Pull now** buttons at the top of the settings tab:
+Seven commands from the command palette (`Ctrl/Cmd+P`), a ribbon icon for push, a status bar item,
+and **Push now** / **Pull now** buttons at the top of the settings tab:
 
 | Command                      | What it does                                                  |
 | ---------------------------- | ------------------------------------------------------------- |
@@ -128,7 +128,33 @@ Six commands from the command palette (`Ctrl/Cmd+P`), a ribbon icon for push, an
 | **Unlock encryption**        | Validates your passphrase and caches the key for the session. |
 | **Connect Google account**   | Runs the sign-in flow.                                        |
 | **Show backup status**       | Connection, folder, tracked file count, encryption state.     |
+| **Show progress panel**      | Opens the sidebar panel. Also reachable from the status bar.  |
 | **Cancel current operation** | Stops after the file in flight. Nothing is left half-written. |
+
+### Watching a run
+
+A run reports itself in three places, and none of them can be closed by
+accident:
+
+- **The status bar**, bottom right: `Geode 142/486 · 38%`. Click it to open the panel.
+- **The panel**, in the right sidebar. Two bars — one for the run, one for the file in flight —
+  with byte counts, the file's name, and a Cancel button. Open it halfway through a push and it
+  shows the push, not an empty shell.
+- **The closing Notice**, with the summary.
+
+The overall bar is measured in bytes, not files, and it is honest from the first frame: the plan
+knows which files are going and the vault knows how big they are before anything moves. A hundred
+notes and one video are not a hundred and one equal steps.
+
+The per-file bar only moves for transfers big enough to be sent in pieces — over 5 MB, which take
+the resumable route in 1 MB chunks. Everything smaller crosses in a single request, and Obsidian's
+`requestUrl` reports nothing at all until a request returns, so its bar fills in one go. That is
+what actually happened, so that is what is shown.
+
+Chunking also means **Cancel lands inside a large file**, not only between files. A 400 MB video
+stops within a megabyte instead of at the end.
+
+> Obsidian gives plugins no status bar on mobile. There the panel and the ribbon icon carry it.
 
 ### Typical first run
 
@@ -366,8 +392,11 @@ Consequences worth knowing:
 - **A run that keeps failing the same way stops.** Five consecutive network or credential failures
   end the run and say so, instead of grinding through two thousand files to report one problem two
   thousand times. Everything already transferred is recorded.
-- **Files over 5 MB go through a resumable upload session.** Google documents the multipart route
-  for 5 MB and under, and a vault's big attachments are exactly the files a backup must not drop.
+- **Files over 5 MB go through a resumable upload session, 1 MB at a time.** Google documents the
+  multipart route for 5 MB and under, and a vault's big attachments are exactly the files a backup
+  must not drop. Sending them in chunks costs a round trip per megabyte and buys the only mid-file
+  progress available, plus a Cancel that works inside one file. Large downloads use ranged requests
+  for the same reason.
 - **The cached folder id is checked, not trusted.** Trash the Drive folder or connect a different
   Google account and listing it still succeeds — it just comes back empty, which reads as "Drive
   lost the whole vault". One request per run turns that into a lookup by name.
@@ -445,7 +474,7 @@ src/
   core/          pure logic: container, kdf, path-codec, selector, ignore, diff, bytes
   drive/         auth-provider, device-flow, pkce-flow, client, dto
   ops/           push, pull, folder, index-store
-  ui/            settings-tab, modals, progress
+  ui/            settings-tab, modals, progress hub, progress panel
 test/            vitest over src/core only — no mocks, no Obsidian stub
 tools/           standalone decryptor, vector generator, version bump
 ```

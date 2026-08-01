@@ -359,9 +359,26 @@ export interface CancellationToken {
   isCancelled(): boolean;
 }
 
-/** Progress sink. The Notice-based implementation lives in ui/progress.ts. */
+/**
+ * Progress sink. The panel and status bar implementation lives in ui/progress.ts.
+ *
+ * Two levels, because one is not enough to tell "stuck" from "working": how far
+ * through the run we are, and how far through the file in flight. The second
+ * only moves for transfers big enough to be sent in pieces — see
+ * `drive/client.ts`. Everything smaller lands in one request and fills the bar
+ * at once, which is the truth about what happened.
+ */
 export interface ProgressReporter {
-  begin(label: string, total: number): void;
+  /**
+   * Starts a phase. `totalBytes` is 0 for a phase that moves no bytes, such as
+   * hashing the vault, and the byte counters are then not shown.
+   */
+  begin(label: string, totalFiles: number, totalBytes: number): void;
+  /** Names the file now in flight, and how much of it there is to move. */
+  beginFile(path: VaultPath, totalBytes: number): void;
+  /** How much of the file in flight has crossed. Never goes backwards. */
+  fileProgress(bytesDone: number): void;
+  /** The file in flight is finished. Advances the overall counters. */
   advance(label: string): void;
   /** An incidental line under the counter. Implementations may ignore it. */
   note(text: string): void;

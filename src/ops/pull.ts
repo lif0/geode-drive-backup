@@ -70,7 +70,7 @@ async function collectLocalFiles(deps: PullDeps): Promise<Result<LocalFile[]>> {
   const stats = await deps.vault.listFiles();
   const files: LocalFile[] = [];
 
-  deps.progress.begin('Reading vault', stats.length);
+  deps.progress.begin('Reading vault', stats.length, 0);
   for (const stat of stats) {
     if (deps.cancellation.isCancelled()) {
       return err(cancelledError('Cancelled while reading the vault.'));
@@ -176,7 +176,11 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
   const warnings = listingWarnings(listing.value);
 
   const work = plan.actions.filter((action) => action.type !== 'skip');
-  deps.progress.begin('Pulling', work.length);
+  const workBytes = work.reduce(
+    (total, action) => total + (remoteByPath.get(action.path)?.size ?? 0),
+    0,
+  );
+  deps.progress.begin('Pulling', work.length, workBytes);
 
   let cancelled = deps.cancellation.isCancelled();
   let sinceSave = 0;
@@ -244,7 +248,15 @@ async function writeIncoming(
   action: Extract<PullAction, { type: 'download' | 'rename-on-collision' }>,
   remoteByPath: ReadonlyMap<string, RemoteFile>,
 ): Promise<Result<void>> {
-  const bytes = await deps.drive.download(action.fileId);
+  const remote = remoteByPath.get(action.path);
+  const size = remote?.size ?? 0;
+
+  // The size Drive reported is what the bar fills against, and what decides
+  // whether the file is worth fetching in ranged pieces.
+  deps.progress.beginFile(action.writeTo, size);
+  const bytes = await deps.drive.download(action.fileId, size, (done) => {
+    deps.progress.fileProgress(done);
+  });
   if (!bytes.ok) return bytes;
 
   const plaintext = await plaintextOf(deps, bytes.value);
@@ -261,7 +273,6 @@ async function writeIncoming(
   // is a second file that this device has never pushed, so indexing it would
   // claim Drive already has it.
   if (action.type === 'download') {
-    const remote = remoteByPath.get(action.path);
     deps.index.set(action.path, {
       sha256: await hashBytes(deps.crypto, plaintext.value),
       driveFileId: action.fileId,

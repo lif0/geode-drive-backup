@@ -1,31 +1,73 @@
 import { Notice } from 'obsidian';
 
-import type { AppError, OperationSummary, ProgressReporter } from '../types';
+import { formatBytes } from '../core/bytes';
+import type { AppError, OperationSummary, ProgressReporter, VaultPath } from '../types';
 
 /**
- * Progress and summaries, rendered as Notices.
+ * Progress state, and the two things that read it.
  *
- * One Notice per operation, rewritten in place. Spawning one per file would bury
- * the app on any vault worth backing up.
+ * This used to be one `Notice` per run. A Notice in Obsidian closes when you
+ * click it — which people do, by accident, reaching for something behind it —
+ * and that took the counter, the file name and the Cancel button with it. The
+ * run carried on invisibly and the only way to stop it was the command palette.
+ *
+ * So the state lives here instead, in one hub that outlives any run, and the
+ * things that draw it — a status bar item and a sidebar panel — subscribe. Both
+ * can be closed and reopened at will; neither can lose the run.
  */
 
-/** How long the closing summary stays on screen. */
+/** How long the closing summary Notice stays on screen. */
 const SUMMARY_DURATION_MS = 12_000;
 
 /**
  * Minimum gap between repaints.
  *
- * A large vault fires thousands of `advance` calls. Touching the DOM on every
- * one of them costs more than the work being reported, so updates are coalesced
- * and the final count is always flushed.
+ * A large vault fires thousands of updates. Touching the DOM on every one of
+ * them costs more than the work being reported, so they are coalesced and the
+ * frames that matter — a phase starting, a run ending — are always flushed.
  */
 const REPAINT_INTERVAL_MS = 100;
 
-/** Trimmed so a long path does not push the counter off a phone screen. */
-function shorten(label: string, max = 44): string {
-  if (label.length <= max) return label;
-  return `…${label.slice(label.length - max + 1)}`;
+/** The file currently in flight. */
+export interface FileProgress {
+  readonly path: string;
+  readonly done: number;
+  readonly total: number;
 }
+
+/** Everything a renderer needs. Replaced wholesale, never mutated in place. */
+export interface ProgressSnapshot {
+  readonly running: boolean;
+  /** "Reading vault", "Pushing", "Pulling". */
+  readonly label: string;
+  readonly filesDone: number;
+  readonly filesTotal: number;
+  readonly bytesDone: number;
+  /** 0 for a phase that moves no bytes, which hides the byte counters. */
+  readonly bytesTotal: number;
+  /** Set only while a file is in flight, so the second bar knows what to fill. */
+  readonly file: FileProgress | null;
+  /** The last path touched. Phases with no per-file bar still have one of these. */
+  readonly detail: string;
+  readonly note: string;
+  /** The last finished run. Shown when nothing is in flight. */
+  readonly summary: OperationSummary | null;
+  readonly error: AppError | null;
+}
+
+const IDLE: ProgressSnapshot = {
+  running: false,
+  label: '',
+  filesDone: 0,
+  filesTotal: 0,
+  bytesDone: 0,
+  bytesTotal: 0,
+  file: null,
+  detail: '',
+  note: '',
+  summary: null,
+  error: null,
+};
 
 /** Human-readable one-liner for a failure. */
 export function describeError(error: AppError): string {
@@ -42,7 +84,7 @@ export function describeError(error: AppError): string {
   }
 }
 
-/** Multi-line text for the closing Notice. */
+/** Multi-line text for the closing Notice and for the panel's footer. */
 export function renderSummary(summary: OperationSummary): string {
   const lines: string[] = [];
   const verb = summary.operation === 'push' ? 'Push' : 'Pull';
@@ -93,104 +135,148 @@ export function renderSummary(summary: OperationSummary): string {
   return lines.join('\n');
 }
 
+/** Percentage, clamped, safe when the total is unknown. */
+export function percentOf(done: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
 /**
- * A ProgressReporter backed by one rewritten Notice, with a Cancel button.
+ * The status bar line.
  *
- * The button writes into `messageEl`, which exists from Obsidian 1.8.7; the
- * manifest requires 1.12, so it is always there.
+ * Kept short: the status bar is shared with every other plugin, and a line that
+ * pushes its neighbours off the screen is its own kind of rude.
  */
-export class NoticeProgress implements ProgressReporter {
-  private notice: Notice | null = null;
-  private textEl: HTMLElement | null = null;
-  private noteEl: HTMLElement | null = null;
+export function statusBarText(snapshot: ProgressSnapshot): string {
+  if (!snapshot.running) {
+    if (snapshot.error !== null) return 'Geode: stopped';
+    if (snapshot.summary !== null) {
+      const failed = snapshot.summary.failures.length;
+      return failed > 0 ? `Geode: ${String(failed)} failed` : 'Geode: done';
+    }
+    return 'Geode';
+  }
 
-  private label = '';
-  private detail = '';
-  private total = 0;
-  private completed = 0;
+  const counted = `${String(snapshot.filesDone)}/${String(snapshot.filesTotal)}`;
+  if (snapshot.bytesTotal <= 0) return `Geode ${counted}`;
+  return `Geode ${counted} · ${String(percentOf(snapshot.bytesDone, snapshot.bytesTotal))}%`;
+}
+
+/**
+ * Holds the progress of the current run and tells its renderers about it.
+ *
+ * One instance per plugin load, not one per run: the panel and the status bar
+ * subscribe once at startup and stay subscribed.
+ */
+export class ProgressHub implements ProgressReporter {
+  private state: ProgressSnapshot = IDLE;
+  private readonly listeners = new Set<(snapshot: ProgressSnapshot) => void>();
   private lastPaint = 0;
+  /** Bytes of files already finished. The bar adds the file in flight to this. */
+  private settledBytes = 0;
 
-  /** `onCancel` is called from the button. Omit it for a run that cannot stop. */
-  constructor(private readonly onCancel: (() => void) | null = null) {}
+  /** `onCancel` is what the panel's Cancel button asks for. */
+  constructor(private readonly onCancel: () => void) {}
 
-  begin(label: string, total: number): void {
-    this.label = label;
-    this.total = total;
-    this.completed = 0;
-    this.detail = '';
-    this.lastPaint = 0;
-
-    if (this.notice === null) this.createNotice();
-    this.paint(true);
+  /** Registers a renderer. Call the returned function to stop listening. */
+  subscribe(listener: (snapshot: ProgressSnapshot) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.state);
+    return () => this.listeners.delete(listener);
   }
 
-  advance(detail: string): void {
-    this.completed += 1;
-    this.detail = detail;
-    this.paint(false);
+  snapshot(): ProgressSnapshot {
+    return this.state;
   }
 
-  /** A one-off line under the counter, e.g. how much work the cache saved. */
+  requestCancel(): void {
+    this.onCancel();
+  }
+
+  /* ---------------------------- ProgressReporter --------------------------- */
+
+  begin(label: string, totalFiles: number, totalBytes: number): void {
+    this.settledBytes = 0;
+    this.state = {
+      ...IDLE,
+      running: true,
+      label,
+      filesTotal: totalFiles,
+      bytesTotal: totalBytes,
+      // A new phase within one run must not wipe what the run already reported.
+      summary: null,
+      error: null,
+    };
+    this.emit(true);
+  }
+
+  beginFile(path: VaultPath, totalBytes: number): void {
+    // Throttled, not forced: on a vault of five thousand small notes this fires
+    // five thousand times, and forcing a repaint on each one would cost more
+    // than the uploads being reported.
+    this.state = { ...this.state, detail: path, file: { path, done: 0, total: totalBytes } };
+    this.emit(false);
+  }
+
+  fileProgress(bytesDone: number): void {
+    const file = this.state.file;
+    if (file === null) return;
+
+    const done = Math.max(file.done, Math.min(bytesDone, file.total));
+    this.state = {
+      ...this.state,
+      file: { ...file, done },
+      bytesDone: this.settledBytes + done,
+    };
+    this.emit(false);
+  }
+
+  advance(label: string): void {
+    // Whatever the file reported along the way, it is finished now, so it counts
+    // in full. Anything else lets the overall bar drift below the truth on every
+    // transfer small enough to have been sent in a single request.
+    this.settledBytes += this.state.file?.total ?? 0;
+    this.state = {
+      ...this.state,
+      filesDone: this.state.filesDone + 1,
+      bytesDone: this.settledBytes,
+      detail: label,
+      file: null,
+    };
+    this.emit(false);
+  }
+
   note(text: string): void {
-    this.noteEl?.setText(text);
+    this.state = { ...this.state, note: text };
+    this.emit(false);
   }
 
   done(summary: OperationSummary): void {
-    this.hide();
+    this.state = { ...IDLE, summary };
+    this.emit(true);
     new Notice(renderSummary(summary), SUMMARY_DURATION_MS);
   }
 
   fail(error: AppError): void {
-    this.hide();
+    this.state = { ...IDLE, error };
+    this.emit(true);
     // A cancellation is the user's own doing: say so briefly and without alarm.
-    const duration = error.kind === 'cancelled' ? 4000 : SUMMARY_DURATION_MS;
-    new Notice(describeError(error), duration);
+    new Notice(describeError(error), error.kind === 'cancelled' ? 4000 : SUMMARY_DURATION_MS);
   }
 
-  private createNotice(): void {
-    // Duration 0 keeps it up until the operation replaces or hides it.
-    const notice = new Notice('', 0);
-    notice.messageEl.empty();
+  /* -------------------------------------------------------------------------- */
 
-    this.textEl = notice.messageEl.createDiv();
-    this.noteEl = notice.messageEl.createDiv();
-    this.noteEl.style.opacity = '0.7';
-    this.noteEl.style.fontSize = 'var(--font-ui-smaller)';
-
-    if (this.onCancel !== null) {
-      const cancel = notice.messageEl.createEl('button', { text: 'Cancel' });
-      cancel.style.marginTop = '0.6em';
-      cancel.addEventListener('click', () => {
-        cancel.disabled = true;
-        cancel.setText('Stopping…');
-        this.onCancel?.();
-      });
-    }
-
-    this.notice = notice;
-  }
-
-  /**
-   * Repaints at most every REPAINT_INTERVAL_MS. `force` is for the first and
-   * last frame, where being current matters more than being cheap.
-   */
-  private paint(force: boolean): void {
+  private emit(force: boolean): void {
     const now = Date.now();
     if (!force && now - this.lastPaint < REPAINT_INTERVAL_MS) return;
     this.lastPaint = now;
 
-    const counter =
-      this.total > 0
-        ? `${this.label} ${String(this.completed)}/${String(this.total)}`
-        : `${this.label}…`;
-    const detail = this.detail.length > 0 ? `\n${shorten(this.detail)}` : '';
-    this.textEl?.setText(`GeodeDrive: ${counter}${detail}`);
+    for (const listener of this.listeners) listener(this.state);
   }
+}
 
-  private hide(): void {
-    this.notice?.hide();
-    this.notice = null;
-    this.textEl = null;
-    this.noteEl = null;
-  }
+/** Renders a byte pair as `4.1 MB of 5.0 MB`, or empty when there is no total. */
+export function renderBytes(done: number, total: number): string {
+  if (total <= 0) return '';
+  return `${formatBytes(done)} of ${formatBytes(total)}`;
 }

@@ -162,7 +162,9 @@ async function collectLocalFiles(
   const files: LocalFile[] = [];
   let hashed = 0;
 
-  deps.progress.begin('Reading vault', stats.length);
+  // No byte total: this phase reads and hashes rather than transferring, and a
+  // byte bar here would be measuring the wrong thing.
+  deps.progress.begin('Reading vault', stats.length, 0);
   for (const stat of stats) {
     if (deps.cancellation.isCancelled()) {
       return err(cancelledError('Cancelled while reading the vault.'));
@@ -290,8 +292,18 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
   const failures: { path: VaultPath; message: string }[] = [];
   const warnings = listingWarnings(listing.value);
 
+  // Every byte this run will move is known before the first one does, because
+  // the plan says which files go and the vault says how big they are. That is
+  // what makes the overall bar honest rather than a file counter in disguise.
   const work = plan.actions.filter((action) => action.type !== 'skip');
-  deps.progress.begin('Pushing', work.length);
+  const workBytes = work.reduce(
+    (total, action) =>
+      action.type === 'upload' || action.type === 'update'
+        ? total + (localByPath.get(action.path)?.size ?? 0)
+        : total,
+    0,
+  );
+  deps.progress.begin('Pushing', work.length, workBytes);
 
   let cancelled = false;
   let sinceSave = 0;
@@ -403,12 +415,24 @@ async function applyAction(
       const content = await contentFor(deps, plaintext, action.encrypt, context.salt);
       if (!content.ok) return content;
 
+      // Report the size actually going over the wire, not the planned one, so
+      // the per-file bar ends exactly where the transfer does. The plan counted
+      // plaintext and a container is 49 bytes longer, so on a vault of encrypted
+      // files the overall bar finishes a few kilobytes past its own total. It is
+      // clamped at 100%, and the alternative — a bar that stops just short — is
+      // the more alarming of the two.
+      deps.progress.beginFile(action.path, content.value.length);
+      const onProgress = (bytes: number): void => {
+        deps.progress.fileProgress(bytes);
+      };
+
       if (action.type === 'upload') {
         const uploaded = await deps.drive.upload(
           context.folderId,
           encodePath(action.path),
           content.value,
           properties(action.encrypt),
+          onProgress,
         );
         if (!uploaded.ok) return uploaded;
 
@@ -423,7 +447,7 @@ async function applyAction(
         return ok(undefined);
       }
 
-      const updated = await deps.drive.updateContent(action.fileId, content.value);
+      const updated = await deps.drive.updateContent(action.fileId, content.value, onProgress);
       if (!updated.ok) return updated;
 
       // The appProperties flag is advisory, but leaving it stale is misleading.

@@ -8,37 +8,25 @@
 [![Mobile](https://img.shields.io/badge/mobile-iOS%20%7C%20Android-success.svg)](#)
 [![Encryption](https://img.shields.io/badge/encryption-AES--256--GCM-informational.svg)](#cifrado)
 
-Copia de seguridad, no sincronización. Envía tu bóveda de Obsidian a **tu propio** Google Drive,
-recupérala en un dispositivo nuevo y, si quieres, cifra las carpetas que elijas antes de que salgan
-de tu equipo.
+El plugin guarda una copia de seguridad de tu bóveda de Obsidian en **tu propio** Google Drive y,
+además, puede cifrar los archivos y carpetas que elijas.
 
 Funciona en escritorio y en el móvil: sin APIs de Node, sin `fetch`, sin dependencias en tiempo de
 ejecución.
 
+![panel](assets/panel.png)
+
 > [!NOTE]
 > **Esta traducción la generó un LLM y no la ha revisado un hablante nativo.** La fuente de verdad
-> es el [README en inglés](../README.md); si algo no coincide, manda el inglés. Si encuentras una
-> frase forzada, un error o un término mal elegido, las correcciones son muy bienvenidas: edita
-> `docs/README.es.md` y abre un PR, o [crea un issue](https://github.com/lif0/geode-drive-backup/issues).
-> Aunque solo arregles una línea, ayuda.
+> es el [README en inglés](../README.md): si los textos no coinciden, manda el inglés. Si
+> encuentras una frase forzada, un error o un término mal elegido, edita `docs/README.es.md` y abre
+> un PR, o [crea un issue](https://github.com/lif0/geode-drive-backup/issues). Aunque solo arregles
+> una línea, ayuda. Los idiomas nuevos también son bienvenidos: copia el archivo en inglés a
+> `docs/README.<código>.md`, mantén el mismo orden de secciones y añádelo a la fila de idiomas de
+> arriba.
 
-> Los nombres de comandos, ajustes y botones se dejan en inglés porque así aparecen en la interfaz
-> de Obsidian.
-
----
-
-## Qué hace y qué no hace deliberadamente
-
-| Hace                                                 | No hace                                          |
-| ---------------------------------------------------- | ------------------------------------------------ |
-| Sube los archivos que cambiaron desde el último push | Fusión a tres bandas                             |
-| Reconstruye la bóveda entera en un equipo nuevo      | Sincronización en tiempo real o en segundo plano |
-| Cifra rutas seleccionadas en el cliente              | Borrar algo en local, nunca                      |
-| Se niega a sobrescribir cambios de otro dispositivo  | Propagar borrados (salvo que lo actives)         |
-| Informa de los conflictos y sigue adelante           | Guardar historial ni versiones de archivos       |
-
-Si lo que necesitas es un motor de sincronización, esta no es la herramienta. GeodeDrive es lo que
-ejecutas antes de un cambio arriesgado en tu bóveda, y lo que ejecutas en un portátil nuevo.
+> Los nombres de comandos, ajustes y botones se dejan en inglés: así es como aparecen en la
+> interfaz de Obsidian.
 
 ---
 
@@ -60,83 +48,150 @@ npm install
 npm run build          # typecheck + lint + tests + bundle
 ```
 
-Copia `main.js` y `manifest.json` a la carpeta de plugins de tu bóveda, o crea allí un enlace
-simbólico al repositorio y ejecuta `npm run dev` para compilar en modo vigilancia.
+Copia `main.js` y `manifest.json` a la carpeta del plugin dentro de la bóveda, o crea allí un
+enlace simbólico al repositorio y ejecuta `npm run dev`: la compilación se actualizará sola.
 
 ---
 
 ## Configuración: tu propio cliente OAuth de Google
 
-GeodeDrive nunca hace pasar tus notas por un tercero, así que las credenciales de Google las pones tú. Es
-un trabajo de una sola vez, unos diez minutos.
+GeodeDrive nunca hace pasar tus notas por servidores ajenos, así que las credenciales de Google las
+creas tú. Es una configuración de una sola vez, unos diez minutos.
 
 1. Abre la [Google Cloud Console](https://console.cloud.google.com/) y crea un proyecto.
 2. **APIs & Services → Library** → activa la **Google Drive API**.
 3. **APIs & Services → OAuth consent screen**. En la consola actual esto abre **Google Auth
-   Platform**. Pulsa **Get started** y rellena el nombre de la app, tu dirección como support email,
-   **Audience: External** y tu dirección otra vez como información de contacto.
-4. Abre la pestaña **Audience** y pulsa **Publish app**, de modo que el estado sea _In production_.
-   Lee el aviso de abajo antes de saltarte este paso: en una herramienta de copias de seguridad no
-   es opcional.
+   Platform**. Pulsa **Get started** y rellena el nombre de la app, tu dirección como support
+   email, **Audience: External** y tu dirección otra vez como información de contacto.
+4. Abre la pestaña **Audience** y pulsa **Publish app** para que el estado pase a _In production_.
+   Si piensas saltarte este paso, lee antes el aviso de abajo: para una herramienta de copias de
+   seguridad es obligatorio.
 5. Abre la pestaña **Clients** → **Create client** → tipo de aplicación
    **TVs and Limited Input devices** → ponle un nombre → **Create**.
 6. Copia el **Client ID** y el **Client secret**.
 7. En Obsidian: _Settings → Geode_ → pega ambos y pulsa **Connect**.
 8. Un diálogo mostrará un código corto y una URL. Abre la URL en cualquier dispositivo donde puedas
-   escribir cómodamente, introduce el código y autoriza el acceso. El diálogo se cierra solo.
+   escribir cómodamente, introduce el código y autoriza el acceso: el diálogo se cierra solo.
 
 > [!IMPORTANT]
-> **No dejes la app en _Testing_.** Google entrega a toda app External cuyo estado de publicación
-> sea _Testing_ un refresh token que caduca a los **7 días**. A partir de ahí GeodeDrive fallaría con
-> «Google revoked this connection» una vez por semana, para siempre. **Publish app** lo arregla de
-> forma definitiva.
+> **No dejes la app en _Testing_.** A toda app External en ese estado Google le entrega un refresh
+> token que caduca a los **7 días**. A partir de ahí GeodeDrive fallaría con «Google revoked this
+> connection» una vez por semana, para siempre. El botón **Publish app** lo arregla de una vez por
+> todas.
 >
-> Publicar aquí no cuesta nada. Sigues siendo el único usuario, y `drive.file` es un permiso
-> **non-sensitive**: no requiere enviar nada a revisión ni una auditoría de seguridad. Si la pantalla
-> de consentimiento avisa de que la app no está verificada, es lo esperable en una app que solo usas
-> tú: abre **Advanced** y continúa.
+> Publicar no cuesta nada. Sigues siendo el único usuario, y `drive.file` es un permiso
+> **non-sensitive**: no hace falta enviar nada a revisión ni pasar una auditoría de seguridad. Si
+> la pantalla de consentimiento avisa de que la app no está verificada, es normal en una app que
+> solo usas tú: abre **Advanced** y continúa.
 >
-> Si decides mantenerla en _Testing_ a propósito, añade antes tu propia cuenta en
-> **Audience → Test users**. Esa sección solo existe mientras el estado es _Testing_, y por eso no la
-> encontrarás después de publicar.
+> Si decides mantener el estado _Testing_ a propósito, añade antes tu propia cuenta en
+> **Audience → Test users**. Esa sección solo existe mientras el estado es _Testing_: después de
+> publicar ya no la encontrarás.
 
-Por qué el tipo de cliente se llama así, por qué creas tú el cliente y por qué publicar es seguro:
-[docs/auth-design.md](auth-design.md) (en inglés).
+Por qué el tipo de cliente tiene ese nombre tan raro, por qué el cliente lo creas tú y por qué
+publicar la app es seguro: [docs/auth-design.md](auth-design.md) (en inglés).
 
-GeodeDrive solicita exactamente un permiso: `https://www.googleapis.com/auth/drive.file`. Solo da acceso
-a los archivos que ha creado este plugin; no puede leer nada más de tu Drive. El permiso amplio
-`drive` no se solicita nunca: es un permiso restringido que exige una auditoría de seguridad de
-pago, y una herramienta de copias de seguridad no tiene nada que hacer ahí.
+GeodeDrive solicita exactamente un permiso: `https://www.googleapis.com/auth/drive.file`. Solo da
+acceso a los archivos que ha creado el propio plugin; no puede leer nada más de tu Drive.
 
-Un token ya publicado deja de valer igualmente si revocas el acceso en
+Un token ya publicado deja de funcionar igualmente si revocas el acceso en
 [myaccount.google.com/permissions](https://myaccount.google.com/permissions) o si pasan seis meses
 sin un solo push ni pull.
 
 > **¿El inicio de sesión falla y Google rechaza el device flow?**
 > Tu cliente es del tipo equivocado. O bien lo vuelves a crear como _TVs and Limited Input
 > devices_, o bien cambias **Sign-in method** a _Redirect with PKCE_ en los ajustes. Ese flujo abre
-> la página de consentimiento normal de Google, redirige a una URL `127.0.0.1` que no carga y te
-> pide pegar el contenido de la barra de direcciones de vuelta en Obsidian. Es feo, pero no
-> necesita un servidor web local, así que también funciona en el móvil.
+> la página de consentimiento normal de Google, redirige a una URL `127.0.0.1` que, lógicamente,
+> no carga, y te pide pegar el contenido de la barra de direcciones de vuelta en Obsidian. Es feo,
+> pero no necesita un servidor web local, así que también funciona en el móvil.
 
-En disco solo se escribe el refresh token. Los access token viven en memoria y se vuelven a obtener
-cuando hacen falta.
+En disco solo se escribe el refresh token. Los access token viven en memoria: el plugin los vuelve
+a pedir cuando hacen falta.
 
 ---
 
 ## Uso
 
-Seis comandos desde la paleta (`Ctrl/Cmd+P`), un icono de barra lateral para el push y botones
-**Push now** / **Pull now** arriba en la pestaña de ajustes:
+Hay siete comandos en la paleta (`Ctrl/Cmd+P`). Además hay un icono en la cinta y un elemento en la
+barra de estado —ambos abren el panel— y, arriba en la pestaña de ajustes, los botones
+**Push now** / **Pull now**.
 
-| Comando                      | Qué hace                                                           |
-| ---------------------------- | ------------------------------------------------------------------ |
-| **Push changes to Drive**    | Sube los archivos nuevos y modificados. El resto lo omite.         |
-| **Pull vault from Drive**    | Descarga la copia entera. Nunca sobrescribe, nunca borra.          |
-| **Unlock encryption**        | Valida tu contraseña y guarda la clave en caché durante la sesión. |
-| **Connect Google account**   | Ejecuta el flujo de inicio de sesión.                              |
-| **Show backup status**       | Conexión, carpeta, archivos rastreados y estado del cifrado.       |
-| **Cancel current operation** | Para tras el archivo en curso. Nada queda escrito a medias.        |
+| Comando                      | Qué hace                                                            |
+| ---------------------------- | ------------------------------------------------------------------- |
+| **Push changes to Drive**    | Sube los archivos nuevos y modificados. El resto lo omite.          |
+| **Pull vault from Drive**    | Descarga la copia entera. Nunca sobrescribe, nunca borra.           |
+| **Unlock encryption**        | Valida tu contraseña y guarda la clave en caché durante la sesión.  |
+| **Connect Google account**   | Ejecuta el flujo de inicio de sesión.                               |
+| **Show backup status**       | Conexión, carpeta, archivos rastreados y estado del cifrado.        |
+| **Show progress panel**      | Abre el panel. El icono de la cinta y la barra de estado, lo mismo. |
+| **Cancel current operation** | Para tras el archivo en curso. Nada queda escrito a medias.         |
+
+### El panel
+
+El icono de la cinta abre un panel en la barra lateral derecha, el mismo
+[de la imagen del principio](#geodedrive). Desde ahí se lanza la copia de seguridad y ahí mismo se
+ve cómo avanza. El panel por sí solo no envía nada hasta que pulsas un botón. Y antes de lanzarla
+conviene mirar qué es exactamente lo que se va a enviar.
+
+**Check** es un ensayo en seco: calcula qué enviaría un push sin enviar nada, y de paso le
+pregunta a Drive cuánto espacio queda. No hace falta la contraseña para esto. El ensayo no es
+gratis: para saber qué cambió hay que recorrer la bóveda igual que lo hace un push. Por eso se
+lanza con un botón y no automáticamente cada vez que se abre el panel.
+
+La última línea habla del espacio en Drive. Si no queda sitio, el push fallará con
+`storageQuotaExceeded` y reintentar no sirve de nada. El panel te avisa de antemano, antes de
+enviar.
+
+### Puntos en el explorador de archivos
+
+Junto a cada archivo y cada carpeta de la barra lateral de Obsidian aparece un punto que indica en
+qué estado está el archivo.
+
+| Punto       | Significado                                             |
+| ----------- | ------------------------------------------------------- |
+| **verde**   | está en Drive y no ha cambiado aquí desde entonces      |
+| **naranja** | nunca se ha enviado, o cambió después del último envío  |
+| **gris**    | excluido, y la fila aparece atenuada                    |
+
+Una carpeta toma el color más «alarmante» de su contenido. Una carpeta verde significa que todos
+los archivos que contiene ya están en Drive; una sola nota sin enviar tiñe de naranja toda la rama.
+
+El color se calcula a partir del tamaño y la fecha de modificación del archivo, no del hash: es el
+mismo atajo con el que un push decide que no hace falta releer un archivo. Si el hash de un archivo
+está marcado como no fiable (se explica más abajo, en el punto sobre las marcas de tiempo), el
+punto será naranja. Y es honesto: el siguiente push realmente volverá a leer ese archivo.
+
+> Obsidian no ofrece a los plugins ninguna API para decorar el árbol de archivos, así que los
+> puntos se dibujan directamente sobre el marcado del explorador, usando el atributo `data-path`
+> que lleva cada fila. El plugin no lee nada privado, pero es una dependencia del marcado interno,
+> no de un contrato oficial. Si los puntos desaparecen algún día, lo primero que hay que sospechar
+> es justo eso. Se desactivan con el ajuste **Mark files in the file explorer**.
+
+### Cómo seguir una ejecución
+
+Mientras dura un push o un pull, se puede seguir en tres sitios. Ninguno se cierra por accidente.
+
+- **La barra de estado**, abajo a la derecha: `Geode 142/486 · 38%`. Al hacer clic se abre el panel.
+- **El panel.** Muestra dos barras: una para toda la ejecución y otra para el archivo en curso. Al
+  lado se ven los bytes, el nombre del archivo y un botón Cancel. Ábrelo a mitad de un push y verás
+  el push, no una pantalla vacía.
+- **El aviso final** con el resumen.
+
+La barra general cuenta bytes, no archivos, así que muestra un progreso honesto desde el primer
+segundo: el plugin sabe de antemano qué archivos van a salir y cuánto pesan. Cien notas y un vídeo
+no son ciento un pasos iguales.
+
+La barra del archivo en curso solo se mueve con los archivos grandes, los que van por trozos. Son
+los de más de 5 MB, que toman la ruta reanudable en fragmentos de 1 MB. Todo lo más pequeño va en
+una sola petición, y el `requestUrl` de Obsidian no informa de nada hasta que la petición termina,
+así que en los archivos pequeños la barra se llena de golpe. Eso es lo que ocurre en realidad, y
+eso es lo que se muestra.
+
+Gracias a los fragmentos, **Cancel actúa también dentro de un archivo grande**, no solo entre
+archivos. Un vídeo de 400 MB se detiene al cabo de un megabyte, no al final.
+
+> En el móvil Obsidian no ofrece barra de estado a los plugins. Ahí el progreso se sigue en el
+> panel y con el icono de la cinta.
 
 ### Primera ejecución típica
 
@@ -144,8 +199,8 @@ Seis comandos desde la paleta (`Ctrl/Cmd+P`), un icono de barra lateral para el 
 Connect Google account   →   Push changes to Drive
 ```
 
-El primer push crea la carpeta en Drive (nombre por defecto: `Geode`) y lo sube todo. Los siguientes
-solo suben lo que haya cambiado.
+El primer push crea la carpeta en Drive (por defecto se llama `Geode`) y lo sube todo. Después
+solo sale lo que haya cambiado.
 
 ### Restaurar en un dispositivo nuevo
 
@@ -154,24 +209,30 @@ Instalar Geode  →  pegar el mismo client ID y secret  →  Connect  →  Pull 
 ```
 
 Pull descarga todos los archivos y reconstruye el árbol de carpetas a partir de los nombres
-codificados. Si la bóveda ya tiene un archivo en la ruta entrante y GeodeDrive no puede demostrar que son
-idénticos, la copia entrante se escribe como `note (from drive).md`; si vuelve a haber colisión, se
-convierte en `(from drive 2)`, `(from drive 3)`, y así sucesivamente. **Pull nunca borra ni
-sobrescribe.**
+codificados. Si en la misma ruta de la bóveda ya hay un archivo y el plugin no puede demostrar que
+ambos son idénticos, la copia de Drive se escribe al lado con el nombre `note (from drive).md`. Si
+vuelve a haber colisión, será `(from drive 2)`, `(from drive 3)`, y así sucesivamente. **Pull nunca
+borra ni sobrescribe nada.**
+
+La coincidencia de rutas se comprueba sin distinguir mayúsculas de minúsculas, incluso en Linux.
+Para Drive, `Note.md` y `note.md` son archivos distintos; para APFS, NTFS y el exFAT de una tarjeta
+SD de Android son el mismo, así que escribir el segundo destruiría en silencio el primero. En un
+sistema de archivos donde las mayúsculas sí cuentan, te llevas una copia `(from drive)` de más; el
+error en el sentido contrario te costaría una nota perdida.
 
 ### Cómo detener una ejecución larga
 
-El push y el pull se pueden parar en cualquier momento: pulsa **Cancel** en el aviso de progreso, o
-ejecuta **Cancel current operation**. La ejecución termina el archivo que tiene entre manos y se
-detiene, así que nada queda a medio subir en Drive ni truncado en la bóveda.
+El push y el pull se pueden interrumpir en cualquier momento: pulsa **Cancel** en el aviso de
+progreso o ejecuta el comando **Cancel current operation**. El plugin termina el archivo en curso y
+se detiene, así que en Drive no quedan archivos a medio subir ni en la bóveda archivos truncados.
 
-Todo lo ya transferido sigue transferido. El índice se escribe cada 25 archivos además de al final,
-de modo que una ejecución detenida —cancelada, caída o con la batería agotada— simplemente continúa
-donde lo dejó en vez de empezar de cero.
+Todo lo que ya se transfirió se queda donde está. El índice se guarda cada 25 archivos, no solo al
+final, de modo que una ejecución interrumpida simplemente continúa donde se quedó, da igual si la
+cancelaste tú o si al teléfono se le acabó la batería.
 
 ### Cómo leer el resumen
 
-Cada ejecución termina con un aviso de resumen:
+Cada ejecución termina con un aviso.
 
 ```
 Push finished: 12 uploaded, 3 updated, 486 unchanged.
@@ -181,30 +242,96 @@ Push finished: 12 uploaded, 3 updated, 486 unchanged.
   Projects/roadmap.md
 ```
 
-Un **conflicto** significa que la copia de Drive cambió desde la última vez que este dispositivo la
-escribió. GeodeDrive no va a adivinar qué lado gana, así que omite el archivo y te lo dice. Se resuelve
-haciendo pull —te quedas con las dos copias, una al lado de la otra— o decidiendo a mano.
+Un **conflicto** significa que la copia de Drive cambió después de que este dispositivo la
+escribiera. El plugin no adivina qué versión es la buena: omite el archivo y te lo dice. A partir
+de ahí puedes hacer pull y quedarte con las dos copias, una junto a otra, o resolverlo a mano.
+
+A veces el resumen trae además una **advertencia**: por ejemplo, que para una misma ruta hay dos
+archivos en Drive, o que en la carpeta hay archivos que el plugin no puso ahí. Eso no entra en los
+contadores, pero significa que la copia de seguridad no tiene exactamente la forma que crees.
+
+---
+
+## Qué entra exactamente en la copia de seguridad
+
+En una bóveda rara vez hay solo notas. Suelen acabar ahí también resultados de compilación,
+binarios, carpetas de programas enteras y vídeos pesados. A una copia de seguridad que se hace por
+los textos, nada de eso le hace falta.
+
+Hay dos interruptores. Ambos vienen desactivados por defecto y ambos entienden la sintaxis de
+`.gitignore`.
+
+| Ajuste                               | Qué hace                                                  |
+| ------------------------------------ | --------------------------------------------------------- |
+| **Respect the vault's `.gitignore`** | Lee el `.gitignore` de la raíz de la bóveda y lo aplica   |
+| **Never upload these paths**         | Tus propias reglas, se aplican después del archivo        |
+
+Las líneas de los ajustes se aplican en segundo lugar, así que un `!` en ellas puede devolver lo
+que el `.gitignore` del repositorio excluyó. La bóveda es primero un repositorio y solo después una
+copia de seguridad, y esos dos papeles no siempre necesitan los mismos archivos.
+
+```gitignore
+bin/                    # una carpeta a cualquier profundidad, también Projects/app/bin
+[Oo]bj/                 # las clases de caracteres funcionan
+/Drafts                 # la barra inicial lo ancla a la raíz de la bóveda
+*.mp4                   # cualquier profundidad, cualquier carpeta
+!Notes/demo.mp4         # …salvo este archivo
+**/.idea/**/*.iml       # ** atraviesa carpetas
+```
+
+Se admiten comentarios `#`, negación `!` (gana la última regla que coincida), anclaje con `/`,
+barra final para carpetas, `*`, `?`, `**` y las clases de caracteres `[abc]` / `[!a-z]`. Los
+`.gitignore` anidados dentro de la bóveda no se leen: solo el de la raíz.
+
+Tres cosas que conviene saber antes de activarlo.
+
+- **Una regla sin barra coincide a cualquier profundidad.** `test/` excluye tanto `test/` en la
+  raíz como `Notes/test/`. Así funciona git, y así es justo como se suele perder por accidente una
+  carpeta de notas de verdad. Pulsa **Preview exclusions** en los ajustes: el plugin aplica las
+  reglas a tu bóveda y muestra qué quedaría fuera. En el proceso no se sube nada.
+- **Excluir no es borrar.** Si un archivo deja de entrar en la copia de seguridad, su copia en
+  Drive no va a ninguna parte: el plugin no la actualizará ni la borrará, ni siquiera con la
+  réplica de borrados activada. Una copia de seguridad que olvida un archivo el mismo día que lo
+  excluyes no merece ese nombre.
+- **Las exclusiones afectan al push, no al pull.** Deciden qué sale de este dispositivo. Todo lo
+  que ya está en la copia se puede recuperar, que es para lo que existe la copia.
+
+Un archivo excluido ni siquiera se abre. Los gigabytes excluidos dejan de costar tiempo en cada
+push: ya no hay que leerlos y calcular su hash solo para saltarlos después. El resumen indica
+cuántos archivos quedaron fuera.
+
+El botón **Show what is excluded** del panel muestra la lista completa en forma de árbol. Las
+carpetas empiezan plegadas y cada una lleva anotado cuántos archivos contiene y cuánto pesan.
+Varios miles de rutas excluidas se convierten en una docena de filas que sí se pueden leer, y una
+carpeta `Journal` que se coló en la lista junto a los artefactos de compilación resulta difícil de
+pasar por alto. Arriba van las carpetas más pesadas: casi todo el beneficio de las exclusiones
+suele concentrarse en dos o tres de ellas.
+
+Los archivos y carpetas que empiezan por punto, Obsidian ni siquiera se los muestra a los plugins.
+Por eso `.obsidian/`, `.git/`, `.idea/` y similares nunca han estado en la copia de seguridad, y
+las reglas sobre ellos no cambian nada.
 
 ---
 
 ## Cifrado
 
-Desactivado por defecto. Cuando está activo, los archivos cuya ruta coincide con alguno de tus
-prefijos se cifran **antes** de salir del dispositivo.
+Desactivado por defecto. Si se activa, los archivos cuya ruta coincide con alguno de tus prefijos
+se cifran **antes** de salir del dispositivo.
 
 - **Cifrado:** AES-256-GCM, con un nonce aleatorio de 12 bytes nuevo por archivo y por push.
 - **Clave:** PBKDF2-SHA256, 600 000 iteraciones, clave de 32 bytes, sal aleatoria de 16 bytes por
   bóveda.
 - **Contenedor:** `MAGIC "OBEV" | VERSION 0x01 | SALT (16) | NONCE (12) | ciphertext+tag`.
 
-La clave se deriva una sola vez por desbloqueo y se guarda en memoria: derivarla por archivo
-congelaría Obsidian en cualquier bóveda real. Se borra cuando el plugin se descarga. La contraseña
-en sí no se escribe en ningún sitio.
+La clave se deriva una vez al desbloquear y se mantiene en memoria: derivarla de nuevo para cada
+archivo colgaría Obsidian en cualquier bóveda real. Al descargarse el plugin, la clave se borra. La
+contraseña en sí no se escribe en ningún sitio.
 
 ### Elegir qué se cifra
 
-Un prefijo de ruta por línea en los ajustes. La regla es deliberadamente tonta, porque una regla
-lista significa que un archivo que creías cifrado se subió en claro:
+En los ajustes enumeras prefijos de ruta, uno por línea. Las reglas son simples a propósito: las
+reglas demasiado listas acaban tarde o temprano con un archivo que creías cifrado subiéndose en
+claro.
 
 | Prefijo    | Coincide con                                | No coincide con |
 | ---------- | ------------------------------------------- | --------------- |
@@ -212,36 +339,36 @@ lista significa que un archivo que creías cifrado se subió en claro:
 | `Journal/` | lo mismo que arriba                         | `Journalism.md` |
 | `Journal*` | `Journal/2026.md`, `Journalism.md`          | `Diary.md`      |
 
-Distingue mayúsculas y minúsculas, `*` solo es especial al final, y las líneas que empiezan por `#`
-se ignoran.
+Distingue mayúsculas y minúsculas. `*` solo funciona al final de la línea. Las líneas que empiezan
+por `#` se ignoran.
 
 ### El archivo de comprobación de contraseña
 
-El primer push cifrado escribe en la carpeta de Drive un archivo pequeño llamado `__keycheck`.
-Contiene la sal de la bóveda y una cadena marcadora conocida. Un dispositivo nuevo lo descarga
-primero y valida tu contraseña contra él **antes de tocar ningún dato real**: una contraseña
-incorrecta aborta de inmediato, sin haber cambiado nada en disco.
+El primer push cifrado escribe en la carpeta de Drive un archivo pequeño llamado `__keycheck`: en
+él van la sal de la bóveda y una cadena marcadora que el plugin conoce. Un dispositivo nuevo lo
+descarga primero y valida tu contraseña **antes de tocar ningún dato real**. Si la contraseña es
+incorrecta, todo se detiene de inmediato y nada cambia en disco.
 
 ### Limitaciones que conviene conocer
 
 - **Los nombres de archivo no se cifran.** Las rutas se codifican en base64url para que Drive las
-  acepte, y eso es codificación, no cifrado. Cualquiera con acceso a la carpeta puede listar todas
-  las rutas de tu bóveda.
-- **El tamaño de los archivos no se oculta.** Un contenedor ocupa la longitud del texto en claro más
-  49 bytes.
+  acepte, y eso es codificación, no cifrado. Cualquiera con acceso a la carpeta verá todas las
+  rutas de tu bóveda.
+- **El tamaño de los archivos no se oculta.** Un contenedor pesa lo mismo que el archivo original
+  más 49 bytes.
 - **No hay recuperación.** Si olvidas la contraseña, los archivos cifrados se pierden: para ti y
   para todos los demás.
-- Que un archivo esté cifrado o no lo decide la cabecera `OBEV` al descargarlo, no la extensión ni
-  el indicador `enc` de los metadatos de Drive. Esos dos se desincronizan con el tiempo; la cabecera
-  no.
+- Que un archivo esté cifrado o no lo decide el plugin al descargarlo por la cabecera `OBEV`. Ni la
+  extensión ni el indicador `enc` de los metadatos de Drive sirven para eso: los dos se
+  desincronizan de la realidad con el tiempo; la cabecera, no.
 
 ---
 
 ## Recuperación de desastres sin Obsidian
 
-`tools/decrypt.mjs` es autónomo. No importa nada de `src/`, no necesita `npm install` ni compilación.
-Copia ese único archivo junto a una carpeta de Drive descargada y podrás recuperar tus notas solo con
-Node y tu contraseña.
+`tools/decrypt.mjs` es totalmente autónomo: no toma nada de `src/` y no necesita ni `npm install`
+ni compilación. Pon ese único archivo junto a la carpeta de Drive descargada y podrás recuperar las
+notas solo con Node y la contraseña.
 
 ```bash
 # Un archivo a stdout
@@ -250,61 +377,100 @@ node tools/decrypt.mjs 5rWL6K-VLm1k
 # Un archivo a disco
 node tools/decrypt.mjs 5rWL6K-VLm1k -o note.md
 
-# Reconstruir una bóveda entera desde una carpeta de Drive descargada:
+# Reconstruir la bóveda entera desde una carpeta de Drive descargada:
 # decodifica los nombres, descifra lo que esté cifrado y copia el resto tal cual
 GEODE_PASSPHRASE='…' node tools/decrypt.mjs --dir ./downloaded-Geode --out ./restored
 
-# Demostrar que esta herramienta coincide con el plugin
+# Comprobar que esta herramienta coincide con el plugin
 node tools/decrypt.mjs --verify-vectors test/vectors.json
 ```
 
-La contraseña se toma de `--passphrase`; si no, de `GEODE_PASSPHRASE`; y si no, se pide de forma
-interactiva.
+El script toma la contraseña de `--passphrase`. Si no está, de la variable `GEODE_PASSPHRASE`. Y si
+tampoco, simplemente la pregunta.
 
 ### Vectores de referencia
 
-`test/vectors.json` contiene cuatro casos congelados: archivo vacío, ASCII corto, UTF-8 con
-cirílico y emoji, y 1 MiB de datos binarios. Cada uno registra la contraseña, la sal, el nonce, el
-texto en claro y el contenedor exacto que se espera.
+`test/vectors.json` fija cuatro casos: archivo vacío, ASCII corto, UTF-8 con cirílico y emoji, y
+1 MiB de datos binarios. Cada uno registra la contraseña, la sal, el nonce, el texto en claro y el
+contenedor exacto que se espera.
 
-Dos implementaciones independientes deben coincidir en todos ellos: `src/core/container.ts`
-(verificada por `npm test`) y `tools/decrypt.mjs` (verificada por `npm run verify:vectors`). CI
-ejecuta las dos. Los vectores solo se añaden: cambiar el formato significa subir `VERSION` y agregar
-casos, nunca editar los existentes.
+Dos implementaciones independientes deben coincidir en los cuatro: a `src/core/container.ts` lo
+verifica `npm test`, y a `tools/decrypt.mjs`, `npm run verify:vectors`. CI ejecuta ambas. Los
+vectores solo se añaden: si el formato cambia, hay que subir `VERSION` y agregar casos nuevos, no
+editar los antiguos.
 
 ---
 
 ## Cómo se detectan los cambios
 
-GeodeDrive decide que un archivo está obsoleto comparando el SHA-256 de su **texto en claro** con un
-índice local guardado en `data.json`.
+Para saber si un archivo cambió, el plugin compara el SHA-256 de su **texto en claro** con un
+índice local en `data.json`.
 
-Esto importa más de lo que parece. Los archivos cifrados reciben un nonce nuevo en cada push, así que
-su texto cifrado —y por tanto el `md5Checksum` de Drive— cambia siempre, aunque la nota no lo haya
-hecho. Cualquier comprobación de obsolescencia basada en sumas de verificación remotas volvería a
-subir la bóveda entera en cada ejecución. El hash del texto en claro es la única señal que se queda
-quieta.
+Esto importa más de lo que parece. Los archivos cifrados reciben un nonce nuevo en cada push, así
+que su texto cifrado —y con él el `md5Checksum` de Drive— cambia cada vez, aunque la nota no haya
+cambiado. Si el plugin se guiara por las sumas de verificación de Drive, tendría que volver a subir
+la bóveda entera en cada ejecución. El hash del texto en claro es lo único que permanece igual.
 
-El md5 remoto se usa para una sola cosa: detectar que **otro dispositivo** reescribió un archivo
-desde el último push de este. Eso es un conflicto, y GeodeDrive se niega a sobrescribirlo.
+El md5 remoto sirve para una sola cosa: por él se ve que **otro dispositivo** reescribió el
+archivo. Eso es un conflicto, y el plugin se niega a machacar ese archivo.
 
-El hash del texto en claro nunca sale de tu dispositivo. Subirlo para un archivo cifrado permitiría
-a cualquiera confirmar una conjetura sobre su contenido.
+El hash del texto en claro nunca sale de tu dispositivo. Si el plugin lo subiera junto con un
+archivo cifrado, cualquiera con acceso a la carpeta podría confirmar una conjetura sobre su
+contenido.
 
-Consecuencias que conviene conocer:
+Qué se deriva de esto.
 
-- Un archivo cuya fecha de modificación **y** tamaño siguen coincidiendo con el índice conserva su
-  hash registrado y ni siquiera se abre. En una bóveda grande donde cambió poco, el push recorre
-  todos los archivos pero apenas lee ninguno. La obsolescencia se sigue decidiendo solo por sha256:
-  el mtime nunca prueba que un archivo cambió, solo que pudo cambiar.
-- Perder `data.json` no es fatal. El siguiente push verá archivos de los que no tiene constancia, los
-  encontrará ya en Drive y los reportará como conflictos en lugar de machacarlos. El pull reconstruye
-  el índice.
-- `.obsidian/` nunca se respalda. Ahí es donde vive `data.json`, y con él tu refresh token de Google.
+- Si a un archivo le coinciden **tanto** la fecha de modificación **como** el tamaño, el plugin
+  toma el hash registrado y ni siquiera abre el archivo. En una bóveda grande donde cambió poco, el
+  push recorre todos los archivos pero apenas lee ninguno. La decisión la sigue tomando solo el
+  sha256: la fecha de modificación no demuestra que el archivo cambió, solo dice que pudo cambiar.
+- Este truco solo funciona si el reloj del sistema de archivos es más fino que tus ediciones.
+  FAT32 —el formato habitual de una tarjeta SD de Android— redondea la hora a dos segundos. Una
+  edición que caiga en el mismo tic sin cambiar el tamaño del archivo pasaría desapercibida para
+  siempre. Por eso, si un archivo se modificó hace menos de un tic, su hash se marca como no fiable
+  y la próxima vez el archivo se vuelve a leer.
+- Pull no usa esos atajos y calcula el hash de todo. Se recurre a él cuando algo ya salió mal, y
+  ahí el error cuesta más caro: si el plugin diera por hecho que el archivo local coincide con la
+  copia de seguridad, no descargaría el duplicado al lado.
+- Las rutas se normalizan a Unicode NFC. macOS devuelve `é` como `e` más un acento aparte, mientras
+  que Windows y Linux usan un solo carácter. Sin normalización, la misma nota subiría a Drive dos
+  veces con nombres distintos y entraría en conflicto consigo misma eternamente.
+- Perder `data.json` no es grave. El siguiente push verá archivos de los que no sabe nada, los
+  encontrará en Drive y avisará de conflictos en vez de machacarlos. Pull reconstruye el índice.
+- La entrada de una ruta que ya no existe ni en la bóveda **ni** en Drive se elimina del índice.
+  Así `data.json` no crece sin límite y el contador de archivos rastreados sigue siendo honesto.
+- `.obsidian/` no entra nunca en la copia de seguridad: ahí vive `data.json`, y dentro está tu
+  refresh token de Google.
 
-### Cómo se almacena en Drive
+### Hablando con Drive
 
-Plano. Una carpeta, un archivo de Drive por cada archivo de la bóveda, sin replicar la jerarquía:
+- **La limitación de velocidad es lo normal, no un error.** A una ráfaga de subidas Drive responde
+  de forma rutinaria con 429 o un 5xx pasajero. El plugin reintenta esas peticiones con esperas
+  crecientes y algo de azar, respeta `Retry-After` y hace hasta cinco intentos. Un 403 por límite
+  de frecuencia también se reintenta; un 403 con `storageQuotaExceeded` —el del espacio agotado—
+  no: esperar ahí no sirve. La cancelación se comprueba también durante la espera, así que no habrá
+  que aguantar una pausa de veinte segundos hasta el final.
+- **Si todo falla con el mismo error, la ejecución se detiene.** Tras cinco fallos seguidos de red
+  o de credenciales, el plugin termina y lo comunica. De lo contrario recorrería dos mil archivos y
+  notificaría dos mil veces el mismo problema. Todo lo que llegó a subirse queda registrado.
+- **Los archivos de más de 5 MB van por una sesión reanudable, de 1 MB en 1 MB.** Google recomienda
+  multipart solo para archivos de hasta 5 MB, y los adjuntos grandes son justo los archivos que una
+  copia de seguridad no puede permitirse perder. Subir por fragmentos cuesta una petición extra por
+  megabyte, pero a cambio da progreso dentro del archivo y un Cancel que no solo funciona entre
+  archivos. Las descargas grandes van igual, por rangos.
+- **El id de carpeta guardado se comprueba, no se da por bueno.** Si la carpeta de Drive acabó en
+  la papelera o conectaste otra cuenta de Google, la petición de listado seguirá funcionando y
+  devolverá una lista vacía; desde fuera parece que Drive perdió la bóveda entera. Una petición al
+  principio de cada ejecución convierte esa situación en una simple búsqueda de la carpeta por
+  nombre.
+- **Una misma ruta puede estar ocupada por dos archivos en Drive.** Drive no exige nombres únicos,
+  así que dos dispositivos que crean la misma nota casi a la vez producen exactamente eso. El
+  plugin se queda con el archivo más reciente —y elige igual en todos los dispositivos— y lo cuenta
+  en el resumen en vez de esconder la otra copia.
+
+### Cómo se almacena todo en Drive
+
+Plano. Una carpeta, un archivo de Drive por cada archivo de la bóveda, sin anidamiento.
 
 ```
 Geode/
@@ -313,38 +479,44 @@ Geode/
   __keycheck
 ```
 
-La ruta vive en el nombre del archivo porque las `appProperties` de Drive están limitadas a unos 124
-bytes por par clave/valor, y cualquier ruta no ASCII se pasa de ahí. Las `appProperties` solo llevan
-`{ v, enc }`.
+La ruta va directamente en el nombre del archivo porque las `appProperties` de Drive están
+limitadas a unos 124 bytes por par clave/valor: cualquier ruta con caracteres no ASCII sencillamente
+no cabe. En `appProperties` solo se guarda `{ v, enc }`.
 
-Cada subida indica esa carpeta como padre, así que nada de lo que escribe GeodeDrive puede acabar en otro
-sitio; y con `drive.file` ni siquiera puede ver el resto de tu Drive.
+Cada subida declara esa carpeta como padre, así que lo que escribe el plugin no puede acabar en
+otro sitio. Y `drive.file` le impide ver el resto de tu Drive.
 
-La carpeta se crea en la raíz de Mi unidad, y el plugin no ofrece forma de elegir otro sitio: con
-`drive.file` no ve tu árbol de carpetas, así que no tiene ningún id de padre que escribir. Si la
-quieres mejor colocada, **arrástrala una vez desde la interfaz web de Drive**. GeodeDrive localiza la
-carpeta por su file id, de modo que el movimiento le resulta transparente; y si algún día pierdes
-`data.json`, la búsqueda de respaldo va por nombre y sin restricción de padre, así que la encontrará
-donde la hayas puesto.
+La carpeta se crea en la raíz de «Mi unidad», y el plugin no ofrecerá otro sitio: con `drive.file`
+no ve tu árbol de carpetas, así que no tiene de dónde sacar un id de padre. Si quieres ponerla en
+orden, **arrástrala una vez en la interfaz web de Drive**. El plugin la localiza por su file id y
+ni notará la mudanza. Y si algún día se pierde `data.json`, la búsqueda de respaldo va por nombre,
+sin restricción de padre, y encontrará la carpeta donde la hayas dejado.
 
 ---
 
 ## Referencia de ajustes
 
-| Ajuste                        | Por defecto     | Notas                                                    |
-| ----------------------------- | --------------- | -------------------------------------------------------- |
-| Client ID / secret            | vacío           | Tu propio cliente OAuth de Google                        |
-| Sign-in method                | Device          | Cambia a PKCE solo si Google rechaza el device flow      |
-| Drive folder name             | `Geode`         | Cambiarlo tras un push apunta a otra carpeta             |
-| Encrypt selected paths        | desactivado     | Activa la lista de prefijos de abajo                     |
-| Encrypted paths               | vacío           | Un prefijo por línea                                     |
-| Ask for the passphrase        | Una por sesión  | O en cada push y cada pull                               |
-| **Mirror deletions to Drive** | **desactivado** | Activado, un borrado local elimina para siempre la copia |
+| Ajuste                          | Por defecto     | Notas                                                             |
+| ------------------------------- | --------------- | ----------------------------------------------------------------- |
+| Client ID / secret              | vacío           | Tu propio cliente OAuth de Google                                  |
+| Sign-in method                  | Device          | Cambia a PKCE solo si Google rechaza el device flow                |
+| Drive folder name               | `Geode`         | Si lo cambias tras un push, el plugin mirará en otra carpeta       |
+| Respect the vault's .gitignore  | desactivado     | Lee el `.gitignore` raíz y omite lo que excluye                    |
+| Never upload these paths        | vacío           | Tus reglas, sintaxis `.gitignore`, se aplican después de él        |
+| Mark files in the file explorer | activado        | Un punto por archivo y carpeta: verde, naranja o gris              |
+| Encrypt selected paths          | desactivado     | Activa la lista de prefijos de abajo                               |
+| Encrypted paths                 | vacío           | Un prefijo por línea                                               |
+| Ask for the passphrase          | Una por sesión  | O en cada push y cada pull                                         |
+| **Mirror deletions to Drive**   | **desactivado** | Activado, un borrado local elimina para siempre la copia de Drive  |
 
-> **Sobre replicar los borrados:** con la opción desactivada, un archivo que borres en local sigue en
-> la copia de seguridad, que suele ser exactamente el motivo de tener una. Con ella activada, el push
-> borra la copia de Drive de forma permanente, saltándose la papelera de Drive. Una copia de
-> seguridad que olvida lo que borraste no puede devolvértelo.
+> **Sobre la réplica de borrados.** Mientras el ajuste está desactivado, un archivo borrado en
+> local sigue en la copia de seguridad; normalmente esa es justo la razón de tener una. Cuando está
+> activado, el push elimina la copia de Drive para siempre, sin pasar por la papelera. Una copia de
+> seguridad que olvida todo lo que borraste ya no podrá devolvértelo.
+>
+> Esto no afecta a las exclusiones. Incluso con la réplica de borrados activada, añadir una ruta a
+> `.gitignore` no borra su copia de Drive. Un archivo excluido es un archivo que el plugin dejó de
+> tocar, no uno que pediste eliminar.
 
 ---
 
@@ -357,7 +529,7 @@ npm run lint            # eslint con reglas basadas en tipos
 npm run test            # vitest sobre src/core
 npm run verify:vectors  # el descifrador autónomo contra los vectores de referencia
 npm run format
-npm run build           # todo lo anterior y luego el bundle de producción
+npm run build           # todo a la vez y luego el bundle de producción
 ```
 
 ### Estructura
@@ -367,59 +539,26 @@ src/
   main.ts        ciclo de vida, comandos y cableado: sin lógica de negocio
   types.ts       tipos con marca, Result, AppError
   settings.ts    forma de los ajustes, valores por defecto, migración
-  core/          lógica pura: container, kdf, path-codec, selector, diff, bytes
+  core/          lógica pura: container, kdf, path-codec, selector, ignore,
+                 diff, backup-state, path-tree, bytes
   drive/         auth-provider, device-flow, pkce-flow, client, dto
-  ops/           push, pull, index-store
-  ui/            settings-tab, modales, progress
+  ops/           push, pull, estimate, folder, index-store
+  ui/            settings-tab, modales, progress hub, panel de progreso
 test/            vitest solo sobre src/core: sin mocks ni stub de Obsidian
 tools/           descifrador autónomo, generador de vectores, bump de versión
 ```
 
-Dos reglas que la compilación impone de forma mecánica, no por convención:
+Dos reglas que la compilación comprueba por sí misma, no de palabra.
 
-- **Nada dentro de `src/core/` puede importar `obsidian`.** Toda la E/S se inyecta desde fuera, y eso
-  es justo lo que permite probar la criptografía y la lógica de diff en Node puro, sin mocks.
-- **Nada dentro de `src/` puede tocar APIs de Node.** `tsconfig.json` define `types: []`, así que
-  `Buffer`, `process` y `require` no compilan, y ESLint los prohíbe por nombre junto con `fetch`.
-  Todo el HTTP pasa por `requestUrl` de Obsidian, lo único que esquiva CORS en el renderer.
+- **Nada dentro de `src/core/` importa `obsidian`.** Toda la E/S llega desde fuera, así que la
+  criptografía y la lógica de comparación se pueden probar en Node puro, sin mocks.
+- **Nada dentro de `src/` toca APIs de Node.** `tsconfig.json` define `types: []`, así que
+  `Buffer`, `process` y `require` directamente no compilan, y ESLint además los prohíbe por nombre
+  junto con `fetch`. Todo el HTTP pasa por `requestUrl` de Obsidian: es lo único que esquiva CORS
+  en el renderer.
 
-Pruébalo: pon `Buffer.from('x')` en cualquier archivo bajo `src/` y tanto `npm run typecheck` como
-`npm run lint` lo rechazarán.
-
----
-
-## Publicar una release
-
-Dos comandos:
-
-```bash
-npm version patch     # o minor / major
-git push --follow-tags
-```
-
-`npm version` sube la versión en `package.json`, después el script de ciclo de vida `version`
-sincroniza `manifest.json` y añade la nueva entrada a `versions.json`; los tres archivos acaban en el
-mismo commit. Al empujar la etiqueta se dispara
-[`release.yml`](../.github/workflows/release.yml), que vuelve a ejecutar typecheck, lint, tests y los
-vectores de referencia, compila `main.js` y publica una GitHub Release con notas generadas.
-
-Tres detalles fáciles de equivocar y caros de depurar:
-
-- **La etiqueta no debe llevar el prefijo `v`.** Obsidian localiza una release por una etiqueta
-  exactamente igual a la versión de `manifest.json`, así que tiene que ser `1.2.3`, no `v1.2.3`. En
-  [`.npmrc`](../.npmrc) está `tag-version-prefix=""`, de modo que `npm version` ya genera la correcta.
-- **Los archivos se suben por separado, nunca comprimidos.** El instalador de Obsidian descarga
-  `main.js` y `manifest.json` directamente de la release; un `.zip` le resulta invisible.
-- **`versions.json` vive en la rama principal, no en la release.** Asocia cada versión del plugin con
-  la versión mínima de Obsidian, y es así como a los clientes antiguos se les ofrece la última
-  compilación que pueden ejecutar.
-
-El workflow se niega a publicar si la etiqueta no concuerda con `manifest.json`, `package.json` o
-`versions.json`, y también si el bundle compilado contiene una API de Node. Una release equivocada
-de esa forma se ve perfecta en GitHub y sencillamente nunca llega a los usuarios.
-
-Para subir la versión mínima de Obsidian, edita `minAppVersion` en `manifest.json` **antes** de
-ejecutar `npm version`: el script copia en `versions.json` el valor que encuentre.
+Comprobarlo es fácil: pon `Buffer.from('x')` en cualquier archivo bajo `src/` y tanto
+`npm run typecheck` como `npm run lint` lo rechazarán.
 
 ---
 

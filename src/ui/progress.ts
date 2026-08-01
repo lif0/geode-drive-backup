@@ -158,7 +158,7 @@ export function statusBarText(snapshot: ProgressSnapshot): string {
       const failed = snapshot.summary.failures.length;
       return failed > 0 ? `Geode: ${String(failed)} failed` : 'Geode: done';
     }
-    return 'Geode';
+    return 'GeodeDrive';
   }
 
   const counted = `${String(snapshot.filesDone)}/${String(snapshot.filesTotal)}`;
@@ -191,6 +191,17 @@ export class ProgressHub implements ProgressReporter {
 
   snapshot(): ProgressSnapshot {
     return this.state;
+  }
+
+  /**
+   * Bytes the run has actually moved, for the log line it leaves behind.
+   *
+   * Counts finished files only, so a run stopped mid-file never claims bytes
+   * that did not land. Read it before `done()` or `fail()`, both of which put
+   * the hub back to idle.
+   */
+  transferredBytes(): number {
+    return this.settledBytes;
   }
 
   requestCancel(): void {

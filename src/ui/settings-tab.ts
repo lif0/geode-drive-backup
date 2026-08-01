@@ -222,7 +222,7 @@ export class GeodeSettingTab extends PluginSettingTab {
       )
       .addText((text) =>
         text
-          .setPlaceholder('Geode')
+          .setPlaceholder('GeodeDrive')
           .setValue(this.settings.folderName)
           .onChange(async (value) => {
             const trimmed = value.trim();

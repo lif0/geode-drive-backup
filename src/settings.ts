@@ -5,6 +5,9 @@
  * never uploaded, and `.gitignore` keeps it out of the repository.
  */
 
+import type { RunOutcome, RunRecord } from './core/history';
+import { HISTORY_LIMIT } from './core/history';
+
 /** When Geode asks for the encryption passphrase. */
 export type PassphrasePrompt = 'once-per-session' | 'every-operation';
 
@@ -52,6 +55,8 @@ export interface GeodeSettings {
   /** Off by default: turning it on lets a local delete erase the Drive copy. */
   mirrorDeletions: boolean;
   index: Record<string, StoredIndexEntry>;
+  /** The last few finished runs, newest first. Read by the panel's History tab. */
+  history: RunRecord[];
   schemaVersion: number;
 }
 
@@ -64,7 +69,7 @@ export const DEFAULT_SETTINGS = {
   clientSecret: '',
   refreshToken: null,
   authFlow: 'device',
-  folderName: 'Geode',
+  folderName: 'GeodeDrive',
   folderId: null,
   useGitignore: false,
   excludedPaths: [],
@@ -74,6 +79,7 @@ export const DEFAULT_SETTINGS = {
   passphrasePrompt: 'once-per-session',
   mirrorDeletions: false,
   index: {},
+  history: [],
   schemaVersion: SETTINGS_SCHEMA_VERSION,
 } satisfies GeodeSettings;
 
@@ -126,6 +132,49 @@ function readIndex(source: Record<string, unknown>, key: string): Record<string,
   return out;
 }
 
+function readNumber(source: Record<string, unknown>, key: string): number {
+  const value = source[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+const RUN_OUTCOMES: readonly RunOutcome[] = ['ok', 'partial', 'cancelled', 'failed'];
+
+/**
+ * Reads the run log, dropping anything malformed.
+ *
+ * A record with no timestamp cannot be placed in the list or the activity chart,
+ * so it is thrown away rather than shown at the epoch. The log is truncated on
+ * the way in as well as on the way out, so a hand-edited data.json cannot leave
+ * the panel drawing ten thousand rows.
+ */
+function readHistory(source: Record<string, unknown>, key: string): RunRecord[] {
+  const value = source[key];
+  if (!Array.isArray(value)) return [];
+
+  const history: RunRecord[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw)) continue;
+
+    const at = readNumber(raw, 'at');
+    if (at <= 0) continue;
+
+    const outcome = raw['outcome'];
+    history.push({
+      at,
+      operation: raw['operation'] === 'pull' ? 'pull' : 'push',
+      outcome: RUN_OUTCOMES.find((known) => known === outcome) ?? 'ok',
+      files: readNumber(raw, 'files'),
+      bytes: readNumber(raw, 'bytes'),
+      durationMs: readNumber(raw, 'durationMs'),
+      conflicts: readNumber(raw, 'conflicts'),
+      failures: readNumber(raw, 'failures'),
+      message: readString(raw, 'message', ''),
+    });
+  }
+
+  return history.slice(0, HISTORY_LIMIT);
+}
+
 /** A fresh copy of the defaults, safe to mutate. */
 export function defaultSettings(): GeodeSettings {
   return {
@@ -133,6 +182,7 @@ export function defaultSettings(): GeodeSettings {
     excludedPaths: [],
     encryptedPrefixes: [],
     index: {},
+    history: [],
   };
 }
 
@@ -171,6 +221,7 @@ export function migrateSettings(raw: unknown): GeodeSettings {
     passphrasePrompt,
     mirrorDeletions: readBoolean(raw, 'mirrorDeletions', false),
     index: readIndex(raw, 'index'),
+    history: readHistory(raw, 'history'),
     schemaVersion: SETTINGS_SCHEMA_VERSION,
   };
 }

@@ -121,20 +121,25 @@ export async function loadIgnoreRules(deps: {
 }): Promise<IgnoreRules> {
   const sources: string[] = [];
 
-  if (deps.settings.useGitignore) {
-    const path = vaultPath(GITIGNORE_PATH);
-    try {
-      if (await deps.vault.exists(path)) {
-        sources.push(utf8Decode(await deps.vault.readBinary(path)));
-      }
-    } catch {
-      // An unreadable .gitignore excludes nothing. Failing the push over it
-      // would trade a backup that holds a few unwanted files for no backup.
-    }
-  }
-
+  if (deps.settings.useGitignore) sources.push(await readGitignore(deps.vault));
   sources.push(deps.settings.excludedPaths.join('\n'));
   return parseIgnore(sources.join('\n'));
+}
+
+/**
+ * The vault's own `.gitignore`, or empty when it has none.
+ *
+ * An unreadable one excludes nothing. Failing the push over it would trade a
+ * backup that holds a few unwanted files for no backup at all.
+ */
+export async function readGitignore(vault: VaultIo): Promise<string> {
+  const path = vaultPath(GITIGNORE_PATH);
+  try {
+    if (!(await vault.exists(path))) return '';
+    return utf8Decode(await vault.readBinary(path));
+  } catch {
+    return '';
+  }
 }
 
 /**

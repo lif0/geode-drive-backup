@@ -3,9 +3,15 @@ import { Notice, Plugin, normalizePath } from 'obsidian';
 import type { BackupState } from './core/backup-state';
 import { rollUpFolders } from './core/backup-state';
 import { hashBytes, toArrayBuffer } from './core/bytes';
+import type { RunRecord } from './core/history';
+import { appendRun, failureOf, recordOf } from './core/history';
 import type { IgnoreRules } from './core/ignore';
 import { NO_IGNORE_RULES, isIgnored } from './core/ignore';
 import { KeyCache } from './core/kdf';
+import type { RuleLine, RuleSourceLines } from './core/rule-stats';
+import { describeRules, setRuleEnabled } from './core/rule-stats';
+import type { VaultSummary } from './core/vault-stats';
+import { isBackedUp, summarizeVault } from './core/vault-stats';
 import type { AuthProvider, OAuthClient, RefreshTokenStore } from './drive/auth-provider';
 import { DriveClient } from './drive/client';
 import { DeviceFlowAuthProvider } from './drive/device-flow';
@@ -15,9 +21,9 @@ import { estimateBackup, previewExclusions } from './ops/estimate';
 import { IndexStore } from './ops/index-store';
 import { runPull } from './ops/pull';
 import type { PushDeps } from './ops/push';
-import { cacheableMtime, loadIgnoreRules, runPush } from './ops/push';
+import { cacheableMtime, loadIgnoreRules, readGitignore, runPush } from './ops/push';
 import type { AuthFlowKind, GeodeSettings, StoredIndexEntry } from './settings';
-import { defaultSettings, migrateSettings } from './settings';
+import { defaultSettings, hasClientCredentials, migrateSettings } from './settings';
 import type { CancellationToken, CryptoProvider, OperationSummary, Result, VaultIo } from './types';
 import { err, ioError, vaultPath } from './types';
 import { DeviceCodeModal } from './ui/device-code-modal';
@@ -230,9 +236,9 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
         continue;
       }
 
-      const entry = this.index.get(path);
-      const current = entry?.mtime === file.stat.mtime && entry.size === file.stat.size;
-      files.set(file.path, current ? 'backed-up' : 'pending');
+      // The same test the panel and a push use, so the dot, the counter and the
+      // upload never disagree about which files are waiting.
+      files.set(file.path, isBackedUp(this.index.get(path), file.stat) ? 'backed-up' : 'pending');
     }
 
     return rollUpFolders(files);
@@ -368,19 +374,27 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   /* ------------------------------ operations ------------------------------ */
 
   private async push(): Promise<void> {
-    await this.run(() => runPush(this.operationDeps()));
+    await this.run('push', () => runPush(this.operationDeps()));
   }
 
   private async pull(): Promise<void> {
     // PullDeps and PushDeps are structurally identical, so one wiring serves both.
-    await this.run(() => runPull(this.operationDeps()));
+    await this.run('pull', () => runPull(this.operationDeps()));
   }
 
   /**
    * One operation at a time. Two concurrent pushes would race on the index and
    * on the Drive folder, and the user has no way to see that happening.
+   *
+   * Every run leaves a line in the log on its way out, whatever became of it.
+   * The Notice it also raises is gone in a few seconds and the status bar has
+   * moved on by morning; the log is the only thing left that can answer whether
+   * last night's push happened.
    */
-  private async run(operation: () => Promise<Result<OperationSummary>>): Promise<void> {
+  private async run(
+    kind: 'push' | 'pull',
+    operation: () => Promise<Result<OperationSummary>>,
+  ): Promise<void> {
     if (this.busy) {
       new Notice('GeodeDrive is already working. Wait for it to finish.');
       return;
@@ -388,14 +402,39 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
     this.busy = true;
     this.cancelRequested = false;
+    const startedAt = Date.now();
     try {
       const result = await operation();
+
+      // Read before the hub is told the run is over: done() and fail() both put
+      // it back to idle, and the byte counter goes with them.
+      const moved = this.progress.transferredBytes();
+      const finishedAt = Date.now();
+      const record = result.ok
+        ? recordOf(result.value, moved, finishedAt - startedAt, finishedAt)
+        : failureOf(kind, result.error, moved, finishedAt - startedAt, finishedAt);
+
       if (result.ok) this.progress.done(result.value);
       else this.progress.fail(result.error);
+
+      await this.rememberRun(record);
     } finally {
       this.busy = false;
       this.badges?.schedule();
     }
+  }
+
+  /**
+   * Adds a finished run to the log.
+   *
+   * Straight to disk rather than through saveSettings, for the same reason the
+   * index is: saving settings reloads the exclusion rules and rescans the vault
+   * to repaint the explorer, and a run that has just finished has already
+   * scheduled that.
+   */
+  private async rememberRun(record: RunRecord): Promise<void> {
+    this.settings.history = appendRun(this.settings.history, record);
+    await this.saveData(this.settings);
   }
 
   private operationDeps(): PushDeps {
@@ -607,6 +646,93 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   /** Opens the tree of everything the rules keep out. */
   showExcluded(): void {
     new ExclusionsModal(this.app, () => this.previewExclusions()).open();
+  }
+
+  /* ---------------------------- ProgressHost ------------------------------ */
+
+  vaultName(): string {
+    return this.app.vault.getName();
+  }
+
+  /** True once both halves of the OAuth client are in settings. */
+  hasCredentials(): boolean {
+    return hasClientCredentials(this.settings);
+  }
+
+  /** True when encryption is on and the key has not been derived this session. */
+  isEncryptionLocked(): boolean {
+    return this.settings.encryptionEnabled && !this.keys.isUnlocked();
+  }
+
+  /** The finished runs, newest first. */
+  runHistory(): readonly RunRecord[] {
+    return this.settings.history;
+  }
+
+  /**
+   * The vault measured against the index and the exclusion rules.
+   *
+   * Stats only: no file is opened and Drive is not asked anything, so the panel
+   * can draw this the moment it opens and redraw it whenever a file changes.
+   * What it cannot know is what Drive holds — that needs `estimateBackup`.
+   */
+  vaultSummary(): VaultSummary {
+    const files = this.app.vault.getFiles().map((file) => ({
+      path: vaultPath(file.path),
+      mtime: file.stat.mtime,
+      size: file.stat.size,
+    }));
+
+    return summarizeVault(files, this.index.snapshot(), (path) =>
+      isIgnored(this.ignoreRules, path),
+    );
+  }
+
+  /**
+   * The exclusion rules as written, each with what it keeps out of this vault.
+   *
+   * Rules from the vault's `.gitignore` come first, because that is the order
+   * they are applied in and a `!` in settings is there to overrule them.
+   */
+  async exclusionRules(): Promise<readonly RuleLine[]> {
+    const files = await this.createVaultIo().listFiles();
+    const sources: RuleSourceLines[] = [];
+
+    if (this.settings.useGitignore) {
+      const lines = (await readGitignore(this.createVaultIo())).split('\n');
+      if (lines.some((line) => line.trim().length > 0)) {
+        sources.push({ source: 'gitignore', lines });
+      }
+    }
+    sources.push({ source: 'settings', lines: this.settings.excludedPaths });
+
+    return describeRules(sources, files);
+  }
+
+  /** Adds a rule to the settings list, if it is not already there. */
+  async addExclusionRule(pattern: string): Promise<void> {
+    const rule = pattern.trim();
+    if (rule.length === 0 || this.settings.excludedPaths.includes(rule)) return;
+
+    this.settings.excludedPaths = [...this.settings.excludedPaths, rule];
+    await this.saveSettings();
+  }
+
+  /**
+   * Switches one of the settings rules on or off.
+   *
+   * Off means commented out, not deleted. The thing people want after turning an
+   * exclusion off is the rule back, and a rule that was deleted to disable it is
+   * a rule that has to be remembered and retyped.
+   */
+  async setExclusionRuleEnabled(position: number, enabled: boolean): Promise<void> {
+    const lines = [...this.settings.excludedPaths];
+    const line = lines[position];
+    if (line === undefined) return;
+
+    lines[position] = setRuleEnabled(line, enabled);
+    this.settings.excludedPaths = lines;
+    await this.saveSettings();
   }
 
   /**

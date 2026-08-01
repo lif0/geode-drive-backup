@@ -40,14 +40,43 @@ export interface PushEstimate {
   readonly deletions: number;
 }
 
+/** What a push would do to one file. */
+export type ChangeKind = 'add' | 'modify' | 'move' | 'delete' | 'conflict';
+
+/** One line of the dry run, for a panel that lists the files rather than counts. */
+export interface ChangedFile {
+  readonly path: VaultPath;
+  readonly kind: ChangeKind;
+  /** Plaintext bytes this would send. Zero for a move, a delete or a conflict. */
+  readonly bytes: number;
+}
+
 /** What the backup looks like from here. */
 export interface BackupEstimate {
   readonly push: PushEstimate;
+  /**
+   * Every file the counters above are counting, named.
+   *
+   * The counts answer "is this push worth starting"; the names answer "why is it
+   * about to send a gigabyte", which is the question people actually have. Not
+   * truncated: the caller knows better than this module how many rows it wants,
+   * and the plan it came from is already this long.
+   */
+  readonly changes: readonly ChangedFile[];
   /** The Drive folder as it stands. */
   readonly remote: { readonly files: number; readonly bytes: number };
   /** Null when Drive would not say — an account with no limit, or a failure. */
   readonly quota: DriveQuota | null;
 }
+
+/** Adds first, then edits, then the ones that send nothing. */
+const CHANGE_ORDER: Record<ChangeKind, number> = {
+  add: 0,
+  modify: 1,
+  move: 2,
+  conflict: 3,
+  delete: 4,
+};
 
 /**
  * Works out what a push would do without doing any of it.
@@ -88,27 +117,34 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
     deletions: 0,
   };
 
+  const changes: ChangedFile[] = [];
+
   for (const action of plan.actions) {
     switch (action.type) {
       case 'upload':
         counters.uploads += 1;
         counters.bytes += sizeOf.get(action.path) ?? 0;
+        changes.push({ path: action.path, kind: 'add', bytes: sizeOf.get(action.path) ?? 0 });
         break;
       case 'update':
         counters.updates += 1;
         counters.bytes += sizeOf.get(action.path) ?? 0;
+        changes.push({ path: action.path, kind: 'modify', bytes: sizeOf.get(action.path) ?? 0 });
         break;
       // Deliberately adds nothing to `bytes`: a move is a metadata request, and
       // counting the file's size here would put a 2 GB attachment in front of
       // the user as an upload that is not going to happen.
       case 'move-remote':
         counters.moves += 1;
+        changes.push({ path: action.path, kind: 'move', bytes: 0 });
         break;
       case 'conflict':
         counters.conflicts += 1;
+        changes.push({ path: action.path, kind: 'conflict', bytes: 0 });
         break;
       case 'delete-remote':
         counters.deletions += 1;
+        changes.push({ path: action.path, kind: 'delete', bytes: 0 });
         break;
       case 'skip':
         // Only a file that is really still there and really unchanged counts.
@@ -123,8 +159,18 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
 
   const quota = await deps.drive.storageQuota();
 
+  // Heaviest first within each kind, because the row that explains a slow push
+  // is almost always the biggest one.
+  changes.sort(
+    (a, b) =>
+      CHANGE_ORDER[a.kind] - CHANGE_ORDER[b.kind] ||
+      b.bytes - a.bytes ||
+      (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  );
+
   return ok({
     push: counters,
+    changes,
     remote: {
       files: listing.value.files.length,
       bytes: listing.value.files.reduce((total, file) => total + file.size, 0),

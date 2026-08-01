@@ -147,11 +147,11 @@ enviar.
 Junto a cada archivo y cada carpeta de la barra lateral de Obsidian aparece un punto que indica en
 qué estado está el archivo.
 
-| Punto       | Significado                                             |
-| ----------- | ------------------------------------------------------- |
-| **verde**   | está en Drive y no ha cambiado aquí desde entonces      |
-| **naranja** | nunca se ha enviado, o cambió después del último envío  |
-| **gris**    | excluido, y la fila aparece atenuada                    |
+| Punto       | Significado                                            |
+| ----------- | ------------------------------------------------------ |
+| **verde**   | está en Drive y no ha cambiado aquí desde entonces     |
+| **naranja** | nunca se ha enviado, o cambió después del último envío |
+| **gris**    | excluido, y la fila aparece atenuada                   |
 
 Una carpeta toma el color más «alarmante» de su contenido. Una carpeta verde significa que todos
 los archivos que contiene ya están en Drive; una sola nota sin enviar tiñe de naranja toda la rama.
@@ -261,10 +261,10 @@ los textos, nada de eso le hace falta.
 Hay dos interruptores. Ambos vienen desactivados por defecto y ambos entienden la sintaxis de
 `.gitignore`.
 
-| Ajuste                               | Qué hace                                                  |
-| ------------------------------------ | --------------------------------------------------------- |
-| **Respect the vault's `.gitignore`** | Lee el `.gitignore` de la raíz de la bóveda y lo aplica   |
-| **Never upload these paths**         | Tus propias reglas, se aplican después del archivo        |
+| Ajuste                               | Qué hace                                                |
+| ------------------------------------ | ------------------------------------------------------- |
+| **Respect the vault's `.gitignore`** | Lee el `.gitignore` de la raíz de la bóveda y lo aplica |
+| **Never upload these paths**         | Tus propias reglas, se aplican después del archivo      |
 
 Las líneas de los ajustes se aplican en segundo lugar, así que un `!` en ellas puede devolver lo
 que el `.gitignore` del repositorio excluyó. La bóveda es primero un repositorio y solo después una
@@ -498,16 +498,16 @@ sin restricción de padre, y encontrará la carpeta donde la hayas dejado.
 
 | Ajuste                          | Por defecto     | Notas                                                             |
 | ------------------------------- | --------------- | ----------------------------------------------------------------- |
-| Client ID / secret              | vacío           | Tu propio cliente OAuth de Google                                  |
-| Sign-in method                  | Device          | Cambia a PKCE solo si Google rechaza el device flow                |
-| Drive folder name               | `Geode`         | Si lo cambias tras un push, el plugin mirará en otra carpeta       |
-| Respect the vault's .gitignore  | desactivado     | Lee el `.gitignore` raíz y omite lo que excluye                    |
-| Never upload these paths        | vacío           | Tus reglas, sintaxis `.gitignore`, se aplican después de él        |
-| Mark files in the file explorer | activado        | Un punto por archivo y carpeta: verde, naranja o gris              |
-| Encrypt selected paths          | desactivado     | Activa la lista de prefijos de abajo                               |
-| Encrypted paths                 | vacío           | Un prefijo por línea                                               |
-| Ask for the passphrase          | Una por sesión  | O en cada push y cada pull                                         |
-| **Mirror deletions to Drive**   | **desactivado** | Activado, un borrado local elimina para siempre la copia de Drive  |
+| Client ID / secret              | vacío           | Tu propio cliente OAuth de Google                                 |
+| Sign-in method                  | Device          | Cambia a PKCE solo si Google rechaza el device flow               |
+| Drive folder name               | `Geode`         | Si lo cambias tras un push, el plugin mirará en otra carpeta      |
+| Respect the vault's .gitignore  | desactivado     | Lee el `.gitignore` raíz y omite lo que excluye                   |
+| Never upload these paths        | vacío           | Tus reglas, sintaxis `.gitignore`, se aplican después de él       |
+| Mark files in the file explorer | activado        | Un punto por archivo y carpeta: verde, naranja o gris             |
+| Encrypt selected paths          | desactivado     | Activa la lista de prefijos de abajo                              |
+| Encrypted paths                 | vacío           | Un prefijo por línea                                              |
+| Ask for the passphrase          | Una por sesión  | O en cada push y cada pull                                        |
+| **Mirror deletions to Drive**   | **desactivado** | Activado, un borrado local elimina para siempre la copia de Drive |
 
 > **Sobre la réplica de borrados.** Mientras el ajuste está desactivado, un archivo borrado en
 > local sigue en la copia de seguridad; normalmente esa es justo la razón de tener una. Cuando está

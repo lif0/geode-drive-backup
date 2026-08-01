@@ -60,7 +60,13 @@ describe('recordOf', () => {
       42,
     );
 
-    expect(made).toMatchObject({ at: 42, files: 10, bytes: 2_048, durationMs: 5_000, outcome: 'ok' });
+    expect(made).toMatchObject({
+      at: 42,
+      files: 10,
+      bytes: 2_048,
+      durationMs: 5_000,
+      outcome: 'ok',
+    });
   });
 
   it('calls a run with failures or conflicts partial', () => {

@@ -251,6 +251,19 @@ export class ProgressHub implements ProgressReporter {
     this.emit(false);
   }
 
+  /**
+   * Back to nothing running, with no summary and no Notice.
+   *
+   * For work that reports progress but has no outcome to announce — a dry run,
+   * which walks the vault exactly as a push does and then has nothing to say
+   * about it beyond the numbers the panel already shows.
+   */
+  idle(): void {
+    this.settledBytes = 0;
+    this.state = IDLE;
+    this.emit(true);
+  }
+
   done(summary: OperationSummary): void {
     this.state = { ...IDLE, summary };
     this.emit(true);

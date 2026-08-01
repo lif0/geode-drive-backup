@@ -7,6 +7,8 @@ import type { AuthProvider, OAuthClient, RefreshTokenStore } from './drive/auth-
 import { DriveClient } from './drive/client';
 import { DeviceFlowAuthProvider } from './drive/device-flow';
 import { PkceAuthProvider } from './drive/pkce-flow';
+import type { BackupEstimate } from './ops/estimate';
+import { estimateBackup } from './ops/estimate';
 import { IndexStore } from './ops/index-store';
 import { runPull } from './ops/pull';
 import type { PushDeps } from './ops/push';
@@ -14,7 +16,7 @@ import { loadIgnoreRules, runPush } from './ops/push';
 import type { AuthFlowKind, GeodeSettings, StoredIndexEntry } from './settings';
 import { defaultSettings, migrateSettings } from './settings';
 import type { CancellationToken, CryptoProvider, OperationSummary, Result, VaultIo } from './types';
-import { vaultPath } from './types';
+import { err, ioError, vaultPath } from './types';
 import { DeviceCodeModal } from './ui/device-code-modal';
 import { PassphraseModal, PkceCodeModal } from './ui/passphrase-modal';
 import { ProgressHub, statusBarText } from './ui/progress';
@@ -56,7 +58,7 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
     this.addSettingTab(new GeodeSettingTab(this.app, this, this));
 
-    this.registerView(GEODE_VIEW_TYPE, (leaf) => new GeodeProgressView(leaf, this.progress));
+    this.registerView(GEODE_VIEW_TYPE, (leaf) => new GeodeProgressView(leaf, this.progress, this));
     this.mountStatusBar();
 
     this.addCommand({
@@ -102,8 +104,12 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
       },
     });
 
-    this.addRibbonIcon('upload-cloud', 'GeodeDrive: push changes to Drive', () => {
-      void this.push();
+    // Opens the panel rather than pushing outright. A backup is not something to
+    // start by brushing an icon: the panel says what is about to go, how much of
+    // it there is and whether Drive has room, and only then offers the button.
+    // The command palette and the settings tab still push directly.
+    this.addRibbonIcon('upload-cloud', 'GeodeDrive', () => {
+      void this.openProgressPanel();
     });
   }
 
@@ -357,6 +363,31 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   trackedFileCount(): number {
     return this.index.size();
+  }
+
+  backupFolderName(): string {
+    return this.settings.folderName;
+  }
+
+  /**
+   * A dry run for the panel: what a push would send, and how full Drive is.
+   *
+   * Holds the same busy flag a real run does, because it walks the vault and
+   * talks to Drive, and two of those at once would fight over both.
+   * `progress.idle()` afterwards because an estimate has no summary to show —
+   * without it the panel would sit there claiming to be reading the vault.
+   */
+  async estimateBackup(): Promise<Result<BackupEstimate>> {
+    if (this.busy) return err(ioError('GeodeDrive is already working. Wait for it to finish.'));
+
+    this.busy = true;
+    this.cancelRequested = false;
+    try {
+      return await estimateBackup(this.operationDeps());
+    } finally {
+      this.busy = false;
+      this.progress.idle();
+    }
   }
 
   /** Runs the exclusion rules over the vault without touching Drive. */

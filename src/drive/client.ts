@@ -20,6 +20,7 @@ import type { DriveFileDto } from './dto';
 import {
   describeErrorBody,
   driveErrorReasons,
+  isDriveAboutDto,
   isDriveFileDto,
   isDriveFileListDto,
   parseJson,
@@ -35,6 +36,7 @@ import {
 
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
+const DRIVE_ABOUT = 'https://www.googleapis.com/drive/v3/about';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const FILE_FIELDS = 'id,name,md5Checksum,modifiedTime,size,appProperties';
 const FOLDER_FIELDS = 'id,name,mimeType,trashed';
@@ -165,6 +167,14 @@ export interface GeodeAppProperties {
   readonly v: '1';
   /** Advisory encryption flag. The container MAGIC is what actually decides. */
   readonly enc: '0' | '1';
+}
+
+/** How full the Google account is. */
+export interface DriveQuota {
+  /** Bytes in use across the whole account, not just what Geode wrote. */
+  readonly usage: number;
+  /** Bytes the account may use, or null when Drive reports no limit. */
+  readonly limit: number | null;
 }
 
 /** What one folder listing produced. */
@@ -379,6 +389,39 @@ export class DriveClient {
     );
     if (!created.ok) return created;
     return ok(driveFileId(created.value.id));
+  }
+
+  /**
+   * How much room is left in the Google account.
+   *
+   * `about.get` is one of the few endpoints `drive.file` can reach that says
+   * anything about Drive as a whole — and it says only how full it is, not what
+   * is in it. Worth asking before a first push: the failure it predicts is a
+   * `storageQuotaExceeded` partway through, which no retry can fix.
+   */
+  async storageQuota(): Promise<Result<DriveQuota>> {
+    const response = await this.send({
+      url: buildUrl(DRIVE_ABOUT, { fields: 'storageQuota' }),
+      method: 'GET',
+    });
+    if (!response.ok) return response;
+    if (response.value.status < 200 || response.value.status >= 300) {
+      return DriveClient.failure(response.value, 'Reading the Drive quota');
+    }
+
+    const body = parseJson(response.value.text);
+    if (!isDriveAboutDto(body)) {
+      return err(networkError('Drive returned a quota Geode could not read.'));
+    }
+
+    const quota = body.storageQuota;
+    const limit = quota?.limit === undefined ? null : Number.parseInt(quota.limit, 10);
+    const usage = Number.parseInt(quota?.usage ?? '0', 10);
+
+    return ok({
+      usage: Number.isFinite(usage) ? usage : 0,
+      limit: limit !== null && Number.isFinite(limit) ? limit : null,
+    });
   }
 
   /**

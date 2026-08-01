@@ -152,7 +152,7 @@ export async function loadIgnoreRules(deps: {
  * gigabytes of video on every push to then decide against uploading it is the
  * cost the exclusion was meant to remove.
  */
-async function collectLocalFiles(
+export async function collectLocalFiles(
   deps: PushDeps,
   ignore: IgnoreRules,
 ): Promise<Result<{ files: LocalFile[]; excluded: number }>> {

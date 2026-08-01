@@ -50,6 +50,31 @@ export function isDriveFileDto(value: unknown): value is DriveFileDto {
   return appProperties === undefined || isStringMap(appProperties);
 }
 
+/**
+ * `about.get`, limited to the storage figures.
+ *
+ * Every number is a string: these are int64 values, and a Drive quota in bytes
+ * outgrows what a JSON number can carry exactly.
+ */
+export interface DriveAboutDto {
+  readonly storageQuota?: {
+    /** Absent on accounts Drive treats as having no limit. */
+    readonly limit?: string;
+    readonly usage?: string;
+  };
+}
+
+/** True if `value` is an about response with a readable storageQuota, or none. */
+export function isDriveAboutDto(value: unknown): value is DriveAboutDto {
+  if (!isRecord(value)) return false;
+
+  const quota = value['storageQuota'];
+  if (quota === undefined) return true;
+  if (!isRecord(quota)) return false;
+
+  return optionalString(quota['limit']) && optionalString(quota['usage']);
+}
+
 /** One page of `files.list`. */
 export interface DriveFileListDto {
   /** Absent, not empty, when the folder has no files. */

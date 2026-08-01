@@ -1,6 +1,9 @@
 import { ItemView } from 'obsidian';
 import type { IconName, WorkspaceLeaf } from 'obsidian';
 
+import { formatBytes } from '../core/bytes';
+import type { BackupEstimate } from '../ops/estimate';
+import type { Result } from '../types';
 import type { ProgressHub, ProgressSnapshot } from './progress';
 import { percentOf, renderBytes, renderSummary } from './progress';
 
@@ -21,14 +24,85 @@ import { percentOf, renderBytes, renderSummary } from './progress';
 
 export const GEODE_VIEW_TYPE = 'geode-progress';
 
+/** What the panel needs from the plugin to do anything. */
+export interface ProgressHost {
+  isConnected(): boolean;
+  isBusy(): boolean;
+  /** The Drive folder the backup lives in. */
+  backupFolderName(): string;
+  trackedFileCount(): number;
+  pushNow(): Promise<void>;
+  pullNow(): Promise<void>;
+  /** A dry run: what a push would send, and how full Drive is. */
+  estimateBackup(): Promise<Result<BackupEstimate>>;
+}
+
 /** Trimmed so a long path does not stretch the sidebar. */
 function shorten(label: string, max = 52): string {
   if (label.length <= max) return label;
   return `…${label.slice(label.length - max + 1)}`;
 }
 
+/** The dry run as lines of text, most useful first. */
+function describeEstimate(estimate: BackupEstimate): string {
+  const { push, remote, quota } = estimate;
+  const lines: string[] = [];
+
+  const outgoing = push.uploads + push.updates;
+  lines.push(
+    outgoing === 0
+      ? 'Nothing to upload — the backup is up to date.'
+      : `${String(outgoing)} files to upload · ${formatBytes(push.bytes)}` +
+          ` (${String(push.uploads)} new, ${String(push.updates)} changed)`,
+  );
+
+  if (push.conflicts > 0) {
+    lines.push(`${String(push.conflicts)} changed on another device and would be skipped.`);
+  }
+  if (push.deletions > 0) {
+    lines.push(`${String(push.deletions)} would be deleted from Drive — mirroring is on.`);
+  }
+
+  lines.push('');
+  lines.push(`Unchanged: ${String(push.unchanged)}`);
+  if (push.excluded > 0) lines.push(`Excluded: ${String(push.excluded)}`);
+  lines.push(`On Drive: ${String(remote.files)} files · ${formatBytes(remote.bytes)}`);
+
+  if (quota === null) {
+    lines.push('Drive space: not reported');
+    return lines.join('\n');
+  }
+
+  if (quota.limit === null) {
+    lines.push(`Drive space: ${formatBytes(quota.usage)} used, no limit`);
+    return lines.join('\n');
+  }
+
+  const free = Math.max(0, quota.limit - quota.usage);
+  lines.push(
+    `Drive space: ${formatBytes(quota.usage)} of ${formatBytes(quota.limit)} used` +
+      ` · ${formatBytes(free)} free`,
+  );
+
+  // The one number here that predicts a failure no retry can fix.
+  if (push.bytes > free) {
+    lines.push('');
+    lines.push(`Not enough room: this push needs ${formatBytes(push.bytes - free)} more.`);
+  }
+
+  return lines.join('\n');
+}
+
 /** The elements the view rewrites. Built once, then only their text changes. */
 interface Parts {
+  readonly connection: HTMLElement;
+  readonly actions: HTMLElement;
+  readonly push: HTMLButtonElement;
+  readonly pull: HTMLButtonElement;
+  readonly check: HTMLButtonElement;
+  readonly estimate: HTMLElement;
+  /** Wraps everything that only means something while a run is in flight. */
+  readonly progress: HTMLElement;
   readonly phase: HTMLElement;
   readonly overallCount: HTMLElement;
   readonly overallFill: HTMLElement;
@@ -75,6 +149,7 @@ export class GeodeProgressView extends ItemView {
   constructor(
     leaf: WorkspaceLeaf,
     private readonly hub: ProgressHub,
+    private readonly host: ProgressHost,
   ) {
     super(leaf);
   }
@@ -114,10 +189,50 @@ export class GeodeProgressView extends ItemView {
     root.empty();
     root.style.padding = '0 12px';
 
-    const phase = root.createEl('h4');
+    const connection = createCaption(root);
+    connection.style.marginTop = '8px';
+
+    // Push and pull live here as well as in the palette and the settings tab,
+    // because this is the screen you are already looking at when you decide to
+    // run one — and the only one that can tell you what it is about to do.
+    const actions = root.createDiv();
+    actions.style.display = 'flex';
+    actions.style.gap = '6px';
+    actions.style.margin = '10px 0';
+
+    const push = actions.createEl('button', { text: 'Push' });
+    push.addClass('mod-cta');
+    push.style.flex = '1';
+    push.addEventListener('click', () => {
+      this.start(() => this.host.pushNow());
+    });
+
+    const pull = actions.createEl('button', { text: 'Pull' });
+    pull.style.flex = '1';
+    pull.addEventListener('click', () => {
+      this.start(() => this.host.pullNow());
+    });
+
+    const check = root.createEl('button', { text: 'Check what would be pushed' });
+    check.style.width = '100%';
+    check.addEventListener('click', () => {
+      void this.runEstimate();
+    });
+
+    const estimate = root.createDiv();
+    estimate.style.marginTop = '10px';
+    estimate.style.fontSize = 'var(--font-ui-smaller)';
+    estimate.style.whiteSpace = 'pre-wrap';
+    estimate.style.opacity = '0.85';
+
+    // Hidden between runs. An empty "Overall" heading over an empty bar reads
+    // as a thing that is broken rather than a thing that is not running.
+    const progress = root.createDiv();
+
+    const phase = progress.createEl('h4');
     phase.style.marginBottom = '2px';
 
-    const overallHeader = root.createDiv();
+    const overallHeader = progress.createDiv();
     overallHeader.style.display = 'flex';
     overallHeader.style.justifyContent = 'space-between';
     overallHeader.style.alignItems = 'baseline';
@@ -126,21 +241,21 @@ export class GeodeProgressView extends ItemView {
     overallTitle.style.fontSize = 'var(--font-ui-smaller)';
     const overallCount = createCaption(overallHeader);
 
-    const overall = createBar(root);
-    const overallBytes = createCaption(root);
+    const overall = createBar(progress);
+    const overallBytes = createCaption(progress);
 
-    const fileName = root.createDiv();
+    const fileName = progress.createDiv();
     fileName.style.marginTop = '14px';
     fileName.style.fontSize = 'var(--font-ui-smaller)';
     fileName.style.wordBreak = 'break-all';
 
-    const file = createBar(root);
-    const fileBytes = createCaption(root);
+    const file = createBar(progress);
+    const fileBytes = createCaption(progress);
 
-    const note = createCaption(root);
+    const note = createCaption(progress);
     note.style.marginTop = '10px';
 
-    const cancel = root.createEl('button', { text: 'Cancel' });
+    const cancel = progress.createEl('button', { text: 'Cancel' });
     cancel.style.marginTop = '14px';
     cancel.style.width = '100%';
     cancel.addEventListener('click', () => {
@@ -156,6 +271,13 @@ export class GeodeProgressView extends ItemView {
     footer.style.whiteSpace = 'pre-wrap';
 
     return {
+      connection,
+      actions,
+      push,
+      pull,
+      check,
+      estimate,
+      progress,
       phase,
       overallCount,
       overallFill: overall.fill,
@@ -170,15 +292,58 @@ export class GeodeProgressView extends ItemView {
     };
   }
 
+  /**
+   * Starts a run and greys the buttons at once.
+   *
+   * A push spends its first seconds resolving the Drive folder and listing it,
+   * and only then reports a phase. Waiting for that first report to disable the
+   * buttons leaves a window in which Push looks like it did nothing and invites
+   * a second click.
+   */
+  private start(run: () => Promise<void>): void {
+    const parts = this.parts;
+    if (parts !== null) {
+      parts.push.disabled = true;
+      parts.pull.disabled = true;
+      parts.check.disabled = true;
+    }
+    void run();
+  }
+
+  /** Runs the dry run and leaves its answer on screen until the next one. */
+  private async runEstimate(): Promise<void> {
+    const parts = this.parts;
+    if (parts === null) return;
+
+    parts.push.disabled = true;
+    parts.pull.disabled = true;
+    parts.check.disabled = true;
+    parts.estimate.setText('Checking…');
+
+    const result = await this.host.estimateBackup();
+
+    // The panel may have been closed and rebuilt while the vault was hashed.
+    const current = this.parts;
+    if (current === null) return;
+
+    current.estimate.setText(
+      result.ok ? describeEstimate(result.value) : `Could not check: ${result.error.message}`,
+    );
+    this.renderHeader(current);
+  }
+
   private render(snapshot: ProgressSnapshot): void {
     const parts = this.parts;
     if (parts === null) return;
+
+    this.renderHeader(parts);
 
     if (!snapshot.running) {
       this.renderIdle(parts, snapshot);
       return;
     }
 
+    parts.progress.style.display = '';
     parts.phase.setText(snapshot.label);
     parts.overallCount.setText(
       `${String(snapshot.filesDone)} / ${String(snapshot.filesTotal)} files`,
@@ -215,20 +380,35 @@ export class GeodeProgressView extends ItemView {
     parts.note.setText(snapshot.note);
     parts.cancel.disabled = false;
     parts.cancel.setText('Cancel');
-    parts.cancel.style.display = '';
     parts.footer.setText('');
+    // A dry run taken before the push started describes a vault that is now
+    // changing under it. Better blank than stale.
+    parts.estimate.setText('');
+  }
+
+  /** The lines that mean the same thing whether or not a run is in flight. */
+  private renderHeader(parts: Parts): void {
+    const connected = this.host.isConnected();
+    const busy = this.host.isBusy();
+
+    parts.connection.setText(
+      connected
+        ? `Backing up to “${this.host.backupFolderName()}” · ${String(this.host.trackedFileCount())} files tracked`
+        : 'Not connected to Google Drive. Add your OAuth client in settings.',
+    );
+
+    // Disabled rather than hidden: a greyed-out Push explains why nothing
+    // happens when you reach for it, where a missing one just looks broken.
+    const ready = connected && !busy;
+    parts.push.disabled = !ready;
+    parts.pull.disabled = !ready;
+    parts.check.disabled = !ready;
   }
 
   private renderIdle(parts: Parts, snapshot: ProgressSnapshot): void {
-    parts.phase.setText('GeodeDrive');
-    parts.overallCount.setText('');
+    parts.progress.style.display = 'none';
     parts.overallFill.style.width = '0%';
-    parts.overallBytes.setText('');
-    parts.fileName.setText('');
-    parts.fileTrack.style.visibility = 'hidden';
-    parts.fileBytes.setText('');
-    parts.note.setText('');
-    parts.cancel.style.display = 'none';
+    parts.fileFill.style.width = '0%';
 
     if (snapshot.summary !== null) {
       parts.footer.setText(renderSummary(snapshot.summary));
@@ -238,8 +418,6 @@ export class GeodeProgressView extends ItemView {
       parts.footer.setText(snapshot.error.message);
       return;
     }
-    parts.footer.setText(
-      'Nothing running. Push or pull from the ribbon, the command palette, or settings.',
-    );
+    parts.footer.setText('');
   }
 }

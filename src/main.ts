@@ -1,14 +1,17 @@
 import { Notice, Plugin, normalizePath } from 'obsidian';
 
+import type { BackupState } from './core/backup-state';
+import { rollUpFolders } from './core/backup-state';
 import { toArrayBuffer } from './core/bytes';
-import { isIgnored } from './core/ignore';
+import type { IgnoreRules } from './core/ignore';
+import { NO_IGNORE_RULES, isIgnored } from './core/ignore';
 import { KeyCache } from './core/kdf';
 import type { AuthProvider, OAuthClient, RefreshTokenStore } from './drive/auth-provider';
 import { DriveClient } from './drive/client';
 import { DeviceFlowAuthProvider } from './drive/device-flow';
 import { PkceAuthProvider } from './drive/pkce-flow';
-import type { BackupEstimate } from './ops/estimate';
-import { estimateBackup } from './ops/estimate';
+import type { BackupEstimate, ExclusionPreview } from './ops/estimate';
+import { estimateBackup, previewExclusions } from './ops/estimate';
 import { IndexStore } from './ops/index-store';
 import { runPull } from './ops/pull';
 import type { PushDeps } from './ops/push';
@@ -18,9 +21,11 @@ import { defaultSettings, migrateSettings } from './settings';
 import type { CancellationToken, CryptoProvider, OperationSummary, Result, VaultIo } from './types';
 import { err, ioError, vaultPath } from './types';
 import { DeviceCodeModal } from './ui/device-code-modal';
+import { ExclusionsModal } from './ui/exclusions-modal';
+import { FileExplorerBadges } from './ui/file-badges';
 import { PassphraseModal, PkceCodeModal } from './ui/passphrase-modal';
 import { ProgressHub, statusBarText } from './ui/progress';
-import type { ExclusionPreview, SettingsHost } from './ui/settings-tab';
+import type { SettingsHost } from './ui/settings-tab';
 import { GeodeSettingTab } from './ui/settings-tab';
 import { GEODE_VIEW_TYPE, GeodeProgressView } from './ui/progress-view';
 
@@ -51,6 +56,16 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   private readonly cancellation: CancellationToken = {
     isCancelled: () => this.cancelRequested,
   };
+
+  /**
+   * The exclusion rules, kept warm for the file explorer dots.
+   *
+   * Those are redrawn on every explorer mutation, and reading `.gitignore` off
+   * disk that often would be absurd. Reloaded when the settings change and when
+   * a run ends, which is when they can actually differ.
+   */
+  private ignoreRules: IgnoreRules = NO_IGNORE_RULES;
+  private badges: FileExplorerBadges | null = null;
 
   override async onload(): Promise<void> {
     this.settings = migrateSettings(await this.loadData());
@@ -111,11 +126,78 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
     this.addRibbonIcon('upload-cloud', 'GeodeDrive', () => {
       void this.openProgressPanel();
     });
+
+    this.app.workspace.onLayoutReady(() => {
+      void this.startBadges();
+    });
+
+    // A file that was just edited is a file that is no longer in the backup, and
+    // the dot should say so without waiting for a push. Registered one by one
+    // because each vault event carries a different callback signature.
+    const repaint = (): void => {
+      this.badges?.schedule();
+    };
+    this.registerEvent(this.app.vault.on('create', repaint));
+    this.registerEvent(this.app.vault.on('delete', repaint));
+    this.registerEvent(this.app.vault.on('rename', repaint));
+    this.registerEvent(this.app.vault.on('modify', repaint));
+    this.registerEvent(this.app.workspace.on('layout-change', repaint));
   }
 
   /** Drops the derived key. Obsidian calls this on disable, reload and quit. */
   override onunload(): void {
     this.keys.clear();
+    this.badges?.stop();
+    this.badges = null;
+  }
+
+  /* ----------------------------- file badges ------------------------------ */
+
+  /** Loads the exclusion rules and turns the explorer dots on, if they are wanted. */
+  private async startBadges(): Promise<void> {
+    this.ignoreRules = await loadIgnoreRules({
+      vault: this.createVaultIo(),
+      settings: this.settings,
+    });
+
+    if (!this.settings.showFileBadges) {
+      this.badges?.stop();
+      this.badges = null;
+      return;
+    }
+
+    this.badges ??= new FileExplorerBadges(this.app.workspace, () => this.backupStates());
+    this.badges.start();
+  }
+
+  /**
+   * What the file explorer should say about each path.
+   *
+   * "Backed up" means the index has an entry whose size and timestamp still
+   * match the file — the same shortcut a push takes to decide it need not read
+   * the file again. A file whose hash was recorded as uncacheable shows as
+   * pending, which is accurate rather than pessimistic: the next push really
+   * will read it again.
+   *
+   * Never opens a file. This runs on every explorer repaint.
+   */
+  private backupStates(): Map<string, BackupState> {
+    const files = new Map<string, BackupState>();
+
+    for (const file of this.app.vault.getFiles()) {
+      const path = vaultPath(file.path);
+
+      if (isIgnored(this.ignoreRules, path)) {
+        files.set(file.path, 'excluded');
+        continue;
+      }
+
+      const entry = this.index.get(path);
+      const current = entry?.mtime === file.stat.mtime && entry.size === file.stat.size;
+      files.set(file.path, current ? 'backed-up' : 'pending');
+    }
+
+    return rollUpFolders(files);
   }
 
   /* -------------------------- progress surfaces --------------------------- */
@@ -193,6 +275,7 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
       else this.progress.fail(result.error);
     } finally {
       this.busy = false;
+      this.badges?.schedule();
     }
   }
 
@@ -323,6 +406,9 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    // Cheap, and the alternative is dots that describe the settings as they
+    // were when Obsidian started.
+    await this.refreshBadges();
   }
 
   async connectAccount(): Promise<void> {
@@ -392,16 +478,23 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   /** Runs the exclusion rules over the vault without touching Drive. */
   async previewExclusions(): Promise<ExclusionPreview> {
-    const vault = this.createVaultIo();
-    const ignore = await loadIgnoreRules({ vault, settings: this.settings });
+    return previewExclusions({ vault: this.createVaultIo(), settings: this.settings });
+  }
 
-    const all = await vault.listFiles();
-    const excluded = all.filter((stat) => isIgnored(ignore, stat.path));
+  /** Opens the tree of everything the rules keep out. */
+  showExcluded(): void {
+    new ExclusionsModal(this.app, () => this.previewExclusions()).open();
+  }
 
-    return {
-      total: all.length,
-      excluded: excluded.length,
-      sample: excluded.slice(0, 8).map((stat) => stat.path),
-    };
+  /**
+   * Re-reads the exclusion rules and repaints the dots.
+   *
+   * Called after anything that can change what belongs in the backup: a saved
+   * setting, a finished run. The rules live in a file and in settings, and
+   * neither announces itself.
+   */
+  async refreshBadges(): Promise<void> {
+    await this.startBadges();
+    this.badges?.refresh();
   }
 }

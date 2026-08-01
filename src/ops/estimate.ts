@@ -1,6 +1,8 @@
 import { planPush } from '../core/diff';
+import { isIgnored } from '../core/ignore';
 import type { DriveQuota } from '../drive/client';
-import type { Result } from '../types';
+import type { GeodeSettings } from '../settings';
+import type { Result, VaultIo, VaultPath } from '../types';
 import { ok } from '../types';
 import { resolveFolder } from './folder';
 import type { PushDeps } from './push';
@@ -120,4 +122,46 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
     },
     quota: quota.ok ? quota.value : null,
   });
+}
+
+/** One file an exclusion rule keeps out of the backup. */
+export interface ExcludedFile {
+  readonly path: VaultPath;
+  readonly size: number;
+}
+
+/** What the exclusion rules would do to this vault. */
+export interface ExclusionPreview {
+  /** Files Obsidian tracks here. */
+  readonly total: number;
+  /** Every excluded path, not a sample: the tree view needs all of them. */
+  readonly excluded: readonly ExcludedFile[];
+  /** Bytes those add up to — the reason most people exclude anything. */
+  readonly bytes: number;
+}
+
+/**
+ * Applies the exclusion rules and reports what they catch.
+ *
+ * Cheap, unlike `estimateBackup`: it stats the vault and matches paths, and
+ * never opens a file or touches the network. An exclusion rule is invisible by
+ * design — the file is simply not there the day it is wanted — so being able to
+ * ask what one does, without doing anything, is what makes it safe to write.
+ */
+export async function previewExclusions(deps: {
+  readonly vault: VaultIo;
+  readonly settings: GeodeSettings;
+}): Promise<ExclusionPreview> {
+  const ignore = await loadIgnoreRules(deps);
+  const all = await deps.vault.listFiles();
+
+  const excluded: ExcludedFile[] = [];
+  let bytes = 0;
+  for (const stat of all) {
+    if (!isIgnored(ignore, stat.path)) continue;
+    excluded.push({ path: stat.path, size: stat.size });
+    bytes += stat.size;
+  }
+
+  return { total: all.length, excluded, bytes };
 }

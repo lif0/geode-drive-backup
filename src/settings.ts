@@ -43,6 +43,8 @@ export interface GeodeSettings {
    * so a `!` here can bring back something the repository excluded.
    */
   excludedPaths: string[];
+  /** Mark files and folders in Obsidian's file explorer with their backup state. */
+  showFileBadges: boolean;
   encryptionEnabled: boolean;
   /** Vault path prefixes whose files are encrypted before upload. */
   encryptedPrefixes: string[];
@@ -66,6 +68,7 @@ export const DEFAULT_SETTINGS = {
   folderId: null,
   useGitignore: false,
   excludedPaths: [],
+  showFileBadges: true,
   encryptionEnabled: false,
   encryptedPrefixes: [],
   passphrasePrompt: 'once-per-session',
@@ -162,6 +165,7 @@ export function migrateSettings(raw: unknown): GeodeSettings {
     folderId: readNullableString(raw, 'folderId'),
     useGitignore: readBoolean(raw, 'useGitignore', false),
     excludedPaths: readStringArray(raw, 'excludedPaths'),
+    showFileBadges: readBoolean(raw, 'showFileBadges', true),
     encryptionEnabled: readBoolean(raw, 'encryptionEnabled', false),
     encryptedPrefixes: readStringArray(raw, 'encryptedPrefixes'),
     passphrasePrompt,

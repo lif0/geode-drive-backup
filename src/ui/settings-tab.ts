@@ -1,18 +1,11 @@
 import { PluginSettingTab, Setting } from 'obsidian';
 import type { App, Plugin } from 'obsidian';
 
-import { formatPrefixList, parsePrefixList } from '../core/selector';
+import { formatBytes } from '../core/bytes';
+import type { ExclusionPreview } from '../ops/estimate';
 import type { GeodeSettings } from '../settings';
-
-/** What a dry run of the exclusion rules found. */
-export interface ExclusionPreview {
-  /** Files Obsidian tracks in this vault. */
-  readonly total: number;
-  /** How many of them the current rules would leave out. */
-  readonly excluded: number;
-  /** The first few excluded paths, for the user to sanity-check. */
-  readonly sample: readonly string[];
-}
+import { formatPrefixList, parsePrefixList } from '../core/selector';
+import { BADGE_LEGEND } from './file-badges';
 
 /**
  * The settings tab.
@@ -54,15 +47,17 @@ const IGNORE_HELP =
 /** Turns a dry run into the sentence shown under the Preview button. */
 function describeExclusions(preview: ExclusionPreview): string {
   if (preview.total === 0) return 'This vault has no files to check.';
-  if (preview.excluded === 0) {
+  if (preview.excluded.length === 0) {
     return `Nothing is excluded — all ${String(preview.total)} files would be backed up.`;
   }
 
-  const hidden = preview.excluded - preview.sample.length;
+  const sample = preview.excluded.slice(0, 6).map((file) => file.path);
+  const hidden = preview.excluded.length - sample.length;
   const more = hidden > 0 ? `, and ${String(hidden)} more` : '';
+
   return (
-    `${String(preview.excluded)} of ${String(preview.total)} files would be left out: ` +
-    `${preview.sample.join(', ')}${more}`
+    `${String(preview.excluded.length)} of ${String(preview.total)} files ` +
+    `· ${formatBytes(preview.bytes)} would be left out: ${sample.join(', ')}${more}`
   );
 }
 
@@ -283,6 +278,21 @@ export class GeodeSettingTab extends PluginSettingTab {
     const preview = new Setting(root)
       .setName('Check the rules')
       .setDesc('Applies the rules to this vault and lists what they leave out. Changes nothing.');
+
+    new Setting(root)
+      .setName('Mark files in the file explorer')
+      .setDesc(
+        'A dot on every file and folder in the sidebar: ' +
+          `${BADGE_LEGEND.map((entry) => entry.label).join('; ')}. ` +
+          'A folder takes the loudest state of anything inside it. Obsidian gives plugins no ' +
+          'API for this, so it is drawn onto the explorer markup and could break on an update.',
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.settings.showFileBadges).onChange(async (value) => {
+          this.settings.showFileBadges = value;
+          await this.host.saveSettings();
+        }),
+      );
 
     preview.addButton((button) =>
       button.setButtonText('Preview exclusions').onClick(async () => {

@@ -35,6 +35,8 @@ export interface ProgressHost {
   pullNow(): Promise<void>;
   /** A dry run: what a push would send, and how full Drive is. */
   estimateBackup(): Promise<Result<BackupEstimate>>;
+  /** Opens the tree of everything the exclusion rules keep out. */
+  showExcluded(): void;
 }
 
 /** Trimmed so a long path does not stretch the sidebar. */
@@ -217,6 +219,15 @@ export class GeodeProgressView extends ItemView {
     check.style.width = '100%';
     check.addEventListener('click', () => {
       void this.runEstimate();
+    });
+
+    // Its own button rather than a line in the estimate, because the answer is
+    // a tree of thousands of paths and the sidebar is the wrong shape for it.
+    const excluded = root.createEl('button', { text: 'Show what is excluded' });
+    excluded.style.width = '100%';
+    excluded.style.marginTop = '6px';
+    excluded.addEventListener('click', () => {
+      this.host.showExcluded();
     });
 
     const estimate = root.createDiv();

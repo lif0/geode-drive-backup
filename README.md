@@ -153,6 +153,28 @@ with no room left answers a push with `storageQuotaExceeded`, and no amount of
 retrying helps. If what you are about to send does not fit, the panel says so
 before you send it.
 
+### Dots in the file explorer
+
+Every file and folder in Obsidian's sidebar gets a dot saying where it stands:
+
+| Dot        | Meaning                                       |
+| ---------- | --------------------------------------------- |
+| **green**  | on Drive, and unchanged here since it went up |
+| **orange** | never pushed, or changed since it was         |
+| **grey**   | excluded — and the row is dimmed              |
+
+A folder takes the loudest state of anything inside it, so green on a folder means every file
+under it is safe. It has to be earned: one unsaved note turns the whole branch orange.
+
+The check is a stat, not a hash — the same shortcut a push uses to decide it need not re-read a
+file. A file whose hash was recorded as untrustworthy (see the timestamp note below) shows orange,
+which is accurate rather than pessimistic: the next push really will read it again.
+
+> Obsidian gives plugins no API for decorating the file tree, so this is drawn onto the explorer's
+> own markup via the `data-path` attribute every row carries. Nothing private is touched, but it is
+> a dependency on markup rather than on a contract, and it is the first thing to suspect if the
+> dots ever stop appearing. Switch it off with **Mark files in the file explorer**.
+
 ### Watching a run
 
 A run reports itself in three places, and none of them can be closed by
@@ -278,6 +300,12 @@ Three things worth knowing before you turn this on:
 
 An excluded file is never opened, so the gigabytes you exclude stop costing anything on every push
 rather than being read and hashed only to be skipped. The summary says how many were left out.
+
+**Show what is excluded**, in the panel, opens the whole set as a tree. Folders start closed and
+carry the count and the weight of everything beneath them, so a few thousand excluded paths become
+a dozen rows you can actually read — and a folder called `Journal` sitting among the build output
+is impossible to miss. Heaviest first, because what an exclusion is worth is almost always
+concentrated in two or three folders.
 
 Obsidian hides dotfiles and dot-folders from plugins altogether, so `.obsidian/`, `.git/`, `.idea/`
 and friends were never in the backup and rules about them do nothing either way.
@@ -453,17 +481,18 @@ fallback lookup searches by name with no parent constraint and finds it wherever
 
 ## Settings reference
 
-| Setting                        | Default      | Notes                                                  |
-| ------------------------------ | ------------ | ------------------------------------------------------ |
-| Client ID / secret             | empty        | Your own Google OAuth client                           |
-| Sign-in method                 | Device       | Switch to PKCE only if Google rejects the device flow  |
-| Drive folder name              | `Geode`      | Changing it after a push points at a new folder        |
-| Respect the vault's .gitignore | off          | Reads the root `.gitignore` and skips what it excludes |
-| Never upload these paths       | empty        | Your own rules, `.gitignore` syntax, applied after it  |
-| Encrypt selected paths         | off          | Enables the prefix list below                          |
-| Encrypted paths                | empty        | One prefix per line                                    |
-| Ask for the passphrase         | Once/session | Or on every push and pull                              |
-| **Mirror deletions to Drive**  | **off**      | On, a local delete permanently removes the Drive copy  |
+| Setting                         | Default      | Notes                                                  |
+| ------------------------------- | ------------ | ------------------------------------------------------ |
+| Client ID / secret              | empty        | Your own Google OAuth client                           |
+| Sign-in method                  | Device       | Switch to PKCE only if Google rejects the device flow  |
+| Drive folder name               | `Geode`      | Changing it after a push points at a new folder        |
+| Respect the vault's .gitignore  | off          | Reads the root `.gitignore` and skips what it excludes |
+| Never upload these paths        | empty        | Your own rules, `.gitignore` syntax, applied after it  |
+| Mark files in the file explorer | on           | A dot per file and folder: green, orange or grey       |
+| Encrypt selected paths          | off          | Enables the prefix list below                          |
+| Encrypted paths                 | empty        | One prefix per line                                    |
+| Ask for the passphrase          | Once/session | Or on every push and pull                              |
+| **Mirror deletions to Drive**   | **off**      | On, a local delete permanently removes the Drive copy  |
 
 > **On mirroring deletions:** with it off, a file you delete locally stays in the backup — which is
 > usually the entire point of having one. With it on, pushing deletes the Drive copy permanently,
@@ -493,7 +522,8 @@ src/
   main.ts        lifecycle, commands, wiring — no business logic
   types.ts       branded types, Result, AppError
   settings.ts    settings shape, defaults, migration
-  core/          pure logic: container, kdf, path-codec, selector, ignore, diff, bytes
+  core/          pure logic: container, kdf, path-codec, selector, ignore,
+                 diff, backup-state, path-tree, bytes
   drive/         auth-provider, device-flow, pkce-flow, client, dto
   ops/           push, pull, estimate, folder, index-store
   ui/            settings-tab, modals, progress hub, progress panel

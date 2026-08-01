@@ -1,6 +1,7 @@
 import { Notice, Plugin, normalizePath } from 'obsidian';
 
 import { toArrayBuffer } from './core/bytes';
+import { isIgnored } from './core/ignore';
 import { KeyCache } from './core/kdf';
 import type { AuthProvider, OAuthClient, RefreshTokenStore } from './drive/auth-provider';
 import { DriveClient } from './drive/client';
@@ -9,7 +10,7 @@ import { PkceAuthProvider } from './drive/pkce-flow';
 import { IndexStore } from './ops/index-store';
 import { runPull } from './ops/pull';
 import type { PushDeps } from './ops/push';
-import { runPush } from './ops/push';
+import { loadIgnoreRules, runPush } from './ops/push';
 import type { AuthFlowKind, GeodeSettings, StoredIndexEntry } from './settings';
 import { defaultSettings, migrateSettings } from './settings';
 import type { CancellationToken, CryptoProvider, OperationSummary, Result, VaultIo } from './types';
@@ -17,7 +18,7 @@ import { vaultPath } from './types';
 import { DeviceCodeModal } from './ui/device-code-modal';
 import { PassphraseModal, PkceCodeModal } from './ui/passphrase-modal';
 import { NoticeProgress } from './ui/progress';
-import type { SettingsHost } from './ui/settings-tab';
+import type { ExclusionPreview, SettingsHost } from './ui/settings-tab';
 import { GeodeSettingTab } from './ui/settings-tab';
 
 /** Geode: back the vault up to Google Drive, and get it back on a new device. */
@@ -128,7 +129,7 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   private operationDeps(progress: NoticeProgress): PushDeps {
     return {
       vault: this.createVaultIo(),
-      drive: new DriveClient(this.authProvider(), this.crypto),
+      drive: new DriveClient(this.authProvider(), this.crypto, this.cancellation),
       crypto: this.crypto,
       index: this.index,
       keys: this.keys,
@@ -292,5 +293,20 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   trackedFileCount(): number {
     return this.index.size();
+  }
+
+  /** Runs the exclusion rules over the vault without touching Drive. */
+  async previewExclusions(): Promise<ExclusionPreview> {
+    const vault = this.createVaultIo();
+    const ignore = await loadIgnoreRules({ vault, settings: this.settings });
+
+    const all = await vault.listFiles();
+    const excluded = all.filter((stat) => isIgnored(ignore, stat.path));
+
+    return {
+      total: all.length,
+      excluded: excluded.length,
+      sample: excluded.slice(0, 8).map((stat) => stat.path),
+    };
   }
 }

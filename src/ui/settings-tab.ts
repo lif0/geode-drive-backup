@@ -4,6 +4,16 @@ import type { App, Plugin } from 'obsidian';
 import { formatPrefixList, parsePrefixList } from '../core/selector';
 import type { GeodeSettings } from '../settings';
 
+/** What a dry run of the exclusion rules found. */
+export interface ExclusionPreview {
+  /** Files Obsidian tracks in this vault. */
+  readonly total: number;
+  /** How many of them the current rules would leave out. */
+  readonly excluded: number;
+  /** The first few excluded paths, for the user to sanity-check. */
+  readonly sample: readonly string[];
+}
+
 /**
  * The settings tab.
  *
@@ -25,6 +35,8 @@ export interface SettingsHost {
   lockEncryption(): void;
   /** How many files the local index is tracking. */
   trackedFileCount(): number;
+  /** Applies the exclusion rules without uploading anything. */
+  previewExclusions(): Promise<ExclusionPreview>;
 }
 
 const PREFIX_HELP =
@@ -32,6 +44,27 @@ const PREFIX_HELP =
   'in it, but not Journalism.md. "Journal*" matches any path starting with those ' +
   'characters, including Journalism.md. Lines starting with # are ignored. ' +
   'Matching is case-sensitive.';
+
+const IGNORE_HELP =
+  'One rule per line, .gitignore syntax: "bin/" for a folder, "*.mp4" for an ' +
+  'extension, "/Drafts" to pin it to the vault root, "!keep.mp4" to bring one ' +
+  'file back. A rule without a slash matches at any depth, so "test/" also ' +
+  "excludes Notes/test. These lines are applied after the vault's .gitignore.";
+
+/** Turns a dry run into the sentence shown under the Preview button. */
+function describeExclusions(preview: ExclusionPreview): string {
+  if (preview.total === 0) return 'This vault has no files to check.';
+  if (preview.excluded === 0) {
+    return `Nothing is excluded — all ${String(preview.total)} files would be backed up.`;
+  }
+
+  const hidden = preview.excluded - preview.sample.length;
+  const more = hidden > 0 ? `, and ${String(hidden)} more` : '';
+  return (
+    `${String(preview.excluded)} of ${String(preview.total)} files would be left out: ` +
+    `${preview.sample.join(', ')}${more}`
+  );
+}
 
 /** Geode's settings screen. */
 export class GeodeSettingTab extends PluginSettingTab {
@@ -50,6 +83,7 @@ export class GeodeSettingTab extends PluginSettingTab {
     this.renderActions(containerEl);
     this.renderAccount(containerEl);
     this.renderStorage(containerEl);
+    this.renderExclusions(containerEl);
     this.renderEncryption(containerEl);
     this.renderDeletions(containerEl);
     this.renderStatus(containerEl);
@@ -206,6 +240,61 @@ export class GeodeSettingTab extends PluginSettingTab {
             await this.host.saveSettings();
           }),
       );
+  }
+
+  private renderExclusions(root: HTMLElement): void {
+    new Setting(root).setName('What gets backed up').setHeading();
+
+    new Setting(root)
+      .setName("Respect the vault's .gitignore")
+      .setDesc(
+        'Reads .gitignore from the vault root and leaves out what it excludes — build output, ' +
+          'binaries, anything a repository already knows is not worth keeping. Excluded files ' +
+          'are never even opened. Copies already on Drive are left alone, never deleted.',
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.settings.useGitignore).onChange(async (value) => {
+          this.settings.useGitignore = value;
+          await this.host.saveSettings();
+        }),
+      );
+
+    new Setting(root)
+      .setName('Never upload these paths')
+      .setDesc(IGNORE_HELP)
+      .addTextArea((area) => {
+        area.inputEl.rows = 6;
+        area.inputEl.style.width = '100%';
+        area
+          .setPlaceholder('bin/\nlogs/\n*.mp4\n!Notes/demo.mp4')
+          .setValue(this.settings.excludedPaths.join('\n'))
+          .onChange(async (value) => {
+            this.settings.excludedPaths = value
+              .split('\n')
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            await this.host.saveSettings();
+          });
+      });
+
+    // An exclusion rule fails silently by design: the file is simply not there
+    // the day it is needed. A dry run is the only honest way to find out that
+    // "test/" also took out the folder of notes called test.
+    const preview = new Setting(root)
+      .setName('Check the rules')
+      .setDesc('Applies the rules to this vault and lists what they leave out. Changes nothing.');
+
+    preview.addButton((button) =>
+      button.setButtonText('Preview exclusions').onClick(async () => {
+        button.setDisabled(true);
+        preview.setDesc('Checking…');
+        try {
+          preview.setDesc(describeExclusions(await this.host.previewExclusions()));
+        } finally {
+          button.setDisabled(false);
+        }
+      }),
+    );
   }
 
   private renderEncryption(root: HTMLElement): void {

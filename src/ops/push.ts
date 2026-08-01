@@ -1,6 +1,8 @@
-import { hashBytes } from '../core/bytes';
+import { hashBytes, utf8Decode } from '../core/bytes';
 import { encrypt, unlockVault } from '../core/container';
 import { planPush } from '../core/diff';
+import type { IgnoreRules } from '../core/ignore';
+import { isIgnored, parseIgnore } from '../core/ignore';
 import type { KeyCache } from '../core/kdf';
 import { encodePath } from '../core/path-codec';
 import type { DriveClient, GeodeAppProperties } from '../drive/client';
@@ -19,7 +21,8 @@ import type {
   VaultIo,
   VaultPath,
 } from '../types';
-import { cancelledError, cryptoError, driveFileId, err, ok } from '../types';
+import { cancelledError, cryptoError, driveFileId, err, ok, vaultPath } from '../types';
+import { listingWarnings, resolveFolder } from './folder';
 import type { IndexStore } from './index-store';
 
 /**
@@ -60,6 +63,33 @@ export interface PushDeps {
  */
 const INDEX_SAVE_EVERY = 25;
 
+/**
+ * Consecutive network failures before the run gives up on the rest.
+ *
+ * When the connection drops, the token is revoked or the Drive quota runs out,
+ * every remaining file fails the same way. Grinding through two thousand of them
+ * to report two thousand copies of one message helps nobody, and on a phone it
+ * takes long enough that the user assumes the backup is working.
+ */
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+/**
+ * How old a file's mtime must be before it may stand in for its contents.
+ *
+ * The mtime+size shortcut assumes a file that changes gets a new timestamp.
+ * Filesystems with coarse clocks break that assumption: FAT32, which is what an
+ * Android SD card usually is, rounds to two seconds. An edit that lands inside
+ * the same tick and leaves the length alone is then invisible, and the stale
+ * hash sticks forever — the one failure mode this plugin must not have.
+ *
+ * So a hash taken from a file whose timestamp is younger than one tick is
+ * recorded as uncacheable, and the file is read once more on the next push.
+ */
+const MTIME_SETTLED_MS = 2000;
+
+/** The vault's own ignore file. Only the one at the root is read. */
+const GITIGNORE_PATH = '.gitignore';
+
 interface Counters {
   uploaded: number;
   updated: number;
@@ -71,23 +101,39 @@ function properties(encrypted: boolean): GeodeAppProperties {
   return { v: '1', enc: encrypted ? '1' : '0' };
 }
 
+/** `mtime` if it is old enough to be evidence, else `-1`: "always re-read". */
+function cacheableMtime(mtime: number, now: number): number {
+  return now - mtime >= MTIME_SETTLED_MS ? mtime : -1;
+}
+
 /**
- * Resolves the Drive folder, preferring the cached id.
+ * Builds the exclusion rules for this run: the vault's `.gitignore`, then the
+ * lines from settings.
  *
- * Falls back to a lookup by name if the cached id no longer lists — the folder
- * was deleted or the user switched Google accounts.
+ * Settings come second so a `!` there can bring back something the repository's
+ * own ignore file excluded — the vault is a repository first and a backup
+ * second, and the two do not always want the same files.
  */
-async function resolveFolder(deps: PushDeps): Promise<Result<DriveFileId>> {
-  const cached = deps.settings.folderId;
-  if (cached !== null && cached.length > 0) {
-    return ok(driveFileId(cached));
+export async function loadIgnoreRules(deps: {
+  readonly vault: VaultIo;
+  readonly settings: GeodeSettings;
+}): Promise<IgnoreRules> {
+  const sources: string[] = [];
+
+  if (deps.settings.useGitignore) {
+    const path = vaultPath(GITIGNORE_PATH);
+    try {
+      if (await deps.vault.exists(path)) {
+        sources.push(utf8Decode(await deps.vault.readBinary(path)));
+      }
+    } catch {
+      // An unreadable .gitignore excludes nothing. Failing the push over it
+      // would trade a backup that holds a few unwanted files for no backup.
+    }
   }
 
-  const ensured = await deps.drive.ensureFolder(deps.settings.folderName);
-  if (!ensured.ok) return ensured;
-
-  await deps.rememberFolderId(ensured.value);
-  return ensured;
+  sources.push(deps.settings.excludedPaths.join('\n'));
+  return parseIgnore(sources.join('\n'));
 }
 
 /**
@@ -100,9 +146,19 @@ async function resolveFolder(deps: PushDeps): Promise<Result<DriveFileId>> {
  *
  * Staleness is still decided ONLY by comparing sha256 against the index. mtime
  * is never evidence that a file changed — only that it might have.
+ *
+ * Excluded files are dropped before any of that. Not opening them is most of
+ * the point: the folders people exclude are the big ones, and hashing a few
+ * gigabytes of video on every push to then decide against uploading it is the
+ * cost the exclusion was meant to remove.
  */
-async function collectLocalFiles(deps: PushDeps): Promise<Result<LocalFile[]>> {
-  const stats = await deps.vault.listFiles();
+async function collectLocalFiles(
+  deps: PushDeps,
+  ignore: IgnoreRules,
+): Promise<Result<{ files: LocalFile[]; excluded: number }>> {
+  const all = await deps.vault.listFiles();
+  const stats = all.filter((stat) => !isIgnored(ignore, stat.path));
+  const excluded = all.length - stats.length;
   const files: LocalFile[] = [];
   let hashed = 0;
 
@@ -124,7 +180,7 @@ async function collectLocalFiles(deps: PushDeps): Promise<Result<LocalFile[]>> {
       files.push({
         path: stat.path,
         sha256: await hashBytes(deps.crypto, bytes),
-        mtime: stat.mtime,
+        mtime: cacheableMtime(stat.mtime, Date.now()),
         size: stat.size,
       });
       hashed += 1;
@@ -134,8 +190,9 @@ async function collectLocalFiles(deps: PushDeps): Promise<Result<LocalFile[]>> {
     deps.progress.advance(stat.path);
   }
 
-  deps.progress.note(`hashed ${String(hashed)} of ${String(stats.length)} files`);
-  return ok(files);
+  const note = `hashed ${String(hashed)} of ${String(stats.length)} files`;
+  deps.progress.note(excluded > 0 ? `${note}, ${String(excluded)} excluded` : note);
+  return ok({ files, excluded });
 }
 
 /**
@@ -206,13 +263,17 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
   const listing = await deps.drive.listFolder(folderId.value);
   if (!listing.ok) return listing;
 
-  const localFiles = await collectLocalFiles(deps);
-  if (!localFiles.ok) return localFiles;
+  const ignore = await loadIgnoreRules(deps);
 
-  const plan = planPush(localFiles.value, deps.index.snapshot(), listing.value.files, {
+  const collected = await collectLocalFiles(deps, ignore);
+  if (!collected.ok) return collected;
+  const localFiles = collected.value.files;
+
+  const plan = planPush(localFiles, deps.index.snapshot(), listing.value.files, {
     encryptionEnabled: deps.settings.encryptionEnabled,
     encryptedPrefixes: deps.settings.encryptedPrefixes,
     mirrorDeletions: deps.settings.mirrorDeletions,
+    ignore,
   });
 
   const needsKey = plan.actions.some(
@@ -221,18 +282,20 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
   const salt = await unlockIfNeeded(deps, folderId.value, listing.value.keycheckId, needsKey);
   if (!salt.ok) return salt;
 
-  const localByPath = new Map<string, LocalFile>(localFiles.value.map((f) => [f.path, f]));
+  const localByPath = new Map<string, LocalFile>(localFiles.map((f) => [f.path, f]));
   const remoteByPath = new Map<string, RemoteFile>(listing.value.files.map((f) => [f.path, f]));
 
   const counters: Counters = { uploaded: 0, updated: 0, deleted: 0, skipped: 0 };
   const conflicts: VaultPath[] = [];
   const failures: { path: VaultPath; message: string }[] = [];
+  const warnings = listingWarnings(listing.value);
 
   const work = plan.actions.filter((action) => action.type !== 'skip');
   deps.progress.begin('Pushing', work.length);
 
   let cancelled = false;
   let sinceSave = 0;
+  let consecutiveFailures = 0;
 
   for (const action of plan.actions) {
     if (deps.cancellation.isCancelled()) {
@@ -248,9 +311,16 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
       counters,
       conflicts,
     });
-    if (!outcome.ok) {
+    if (outcome.ok) {
+      consecutiveFailures = 0;
+    } else {
       failures.push({ path: action.path, message: outcome.error.message });
+      // Only transport and credential failures count towards giving up. A file
+      // that could not be read or encrypted says nothing about the next one.
+      const systemic = outcome.error.kind === 'network' || outcome.error.kind === 'auth';
+      consecutiveFailures = systemic ? consecutiveFailures + 1 : 0;
     }
+
     if (action.type !== 'skip') {
       deps.progress.advance(action.path);
       sinceSave += 1;
@@ -259,7 +329,19 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
         sinceSave = 0;
       }
     }
+
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      warnings.push(
+        `Stopped early: ${String(consecutiveFailures)} files in a row failed the same way. ` +
+          'Everything already uploaded is recorded — run the push again once the problem is fixed.',
+      );
+      break;
+    }
   }
+
+  // Paths that are gone from the vault and from Drive. Dropping them keeps
+  // data.json from growing forever and the tracked-file count honest.
+  for (const path of plan.forget) deps.index.remove(path);
 
   await deps.index.save();
 
@@ -272,8 +354,10 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
     renamed: 0,
     deleted: counters.deleted,
     skipped: counters.skipped,
+    excluded: collected.value.excluded,
     conflicts,
     failures,
+    warnings,
   });
 }
 

@@ -4,11 +4,26 @@ import type { RequestUrlResponse } from 'obsidian';
 import { concatBytes, toArrayBuffer, toHex, utf8Encode } from '../core/bytes';
 import { KEYCHECK_NAME } from '../core/container';
 import { decodePath } from '../core/path-codec';
-import type { Bytes, CryptoProvider, DriveFileId, DriveName, RemoteFile, Result } from '../types';
-import { driveFileId, driveName, err, networkError, ok } from '../types';
+import type {
+  Bytes,
+  CancellationToken,
+  CryptoProvider,
+  DriveFileId,
+  DriveName,
+  RemoteFile,
+  Result,
+  VaultPath,
+} from '../types';
+import { driveFileId, driveName, err, networkError, ok, vaultPath } from '../types';
 import type { AuthProvider } from './auth-provider';
 import type { DriveFileDto } from './dto';
-import { describeErrorBody, isDriveFileDto, isDriveFileListDto, parseJson } from './dto';
+import {
+  describeErrorBody,
+  driveErrorReasons,
+  isDriveFileDto,
+  isDriveFileListDto,
+  parseJson,
+} from './dto';
 
 /**
  * Google Drive REST v3, limited to what a backup needs.
@@ -22,7 +37,91 @@ const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const FILE_FIELDS = 'id,name,md5Checksum,modifiedTime,size,appProperties';
+const FOLDER_FIELDS = 'id,name,mimeType,trashed';
 const PAGE_SIZE = 1000;
+
+/**
+ * Statuses Drive returns when the answer is "later", not "no".
+ *
+ * Without this a push of any real vault half-fails: Drive answers a burst of
+ * uploads with 429 or a transient 5xx, and every file that catches one is
+ * reported as a failure the user is expected to do something about.
+ */
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+
+/**
+ * The 403 reasons that also mean "later".
+ *
+ * 403 is the one status that needs its body read: `userRateLimitExceeded` is a
+ * backoff, `storageQuotaExceeded` is a full Drive that no amount of waiting
+ * fixes, and both arrive with the same status code.
+ */
+const RETRYABLE_403_REASONS = new Set([
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'sharingRateLimitExceeded',
+  'backendError',
+  'internalError',
+]);
+
+/** Attempts per request, the first one included. */
+const MAX_ATTEMPTS = 5;
+const BASE_BACKOFF_MS = 600;
+const MAX_BACKOFF_MS = 20_000;
+/** Cancellation is checked this often while waiting out a backoff. */
+const BACKOFF_SLICE_MS = 250;
+
+/**
+ * Above this, a multipart upload is out of contract.
+ *
+ * Google documents `uploadType=multipart` for files of 5 MB or less and sends
+ * everything larger to a resumable session. A vault's big attachments are
+ * exactly the files a backup must not quietly drop, so they take that path.
+ */
+const MULTIPART_MAX_BYTES = 5 * 1024 * 1024;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Reads a header without caring how the platform cased the name. */
+function headerValue(headers: Record<string, string>, name: string): string | null {
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted) return value;
+  }
+  return null;
+}
+
+/** `Retry-After` in milliseconds, when Drive sent one as a number of seconds. */
+function retryAfterMs(response: RequestUrlResponse): number | null {
+  const raw = headerValue(response.headers, 'retry-after');
+  if (raw === null) return null;
+
+  const seconds = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return seconds * 1000;
+}
+
+/** True when the status — and for 403, the reason — says to try again. */
+function isRetryable(response: RequestUrlResponse): boolean {
+  if (RETRYABLE_STATUS.has(response.status)) return true;
+  if (response.status !== 403) return false;
+  return driveErrorReasons(parseJson(response.text)).some((reason) =>
+    RETRYABLE_403_REASONS.has(reason),
+  );
+}
+
+/**
+ * Picks which of two Drive files claiming one vault path to treat as the file.
+ *
+ * Newest wins, with the id as a tie-break, so every device makes the same choice
+ * and a conflict reported on one is reported on all of them.
+ */
+function newerOf(a: RemoteFile, b: RemoteFile): RemoteFile {
+  if (a.modifiedTime !== b.modifiedTime) return a.modifiedTime > b.modifiedTime ? a : b;
+  return a.id > b.id ? a : b;
+}
 
 /** appProperties Geode writes. The path is NOT among them — it would overflow. */
 export interface GeodeAppProperties {
@@ -34,12 +133,14 @@ export interface GeodeAppProperties {
 
 /** What one folder listing produced. */
 export interface FolderListing {
-  /** Files whose names decoded to a usable vault path. */
+  /** Files whose names decoded to a usable vault path. One per path. */
   readonly files: readonly RemoteFile[];
   /** The passphrase check file, if the folder has one. */
   readonly keycheckId: DriveFileId | null;
   /** Names that were not encoded paths. Reported, never touched. */
   readonly ignored: readonly string[];
+  /** Paths held by more than one Drive file. All but the newest are ignored. */
+  readonly duplicates: readonly VaultPath[];
 }
 
 function escapeQueryValue(value: string): string {
@@ -72,36 +173,95 @@ interface RequestSpec {
   readonly url: string;
   readonly method: string;
   readonly contentType?: string;
+  readonly headers?: Record<string, string>;
   readonly body?: string | ArrayBuffer;
 }
 
 /** Talks to Drive. One instance per plugin load, holding the auth provider. */
 export class DriveClient {
+  /**
+   * `cancellation` only shortens a backoff. Requests themselves are never
+   * interrupted mid-flight, so a cancelled run still leaves whole files behind,
+   * never half of one.
+   */
   constructor(
     private readonly auth: AuthProvider,
     private readonly crypto: CryptoProvider,
+    private readonly cancellation: CancellationToken | null = null,
   ) {}
 
   /**
-   * Sends a request with a bearer token, retrying once on 401.
+   * Sends a request with a bearer token, retrying what is worth retrying.
    *
-   * A 401 mid-run is normal: access tokens last an hour and a big push outlives
-   * one. The retry re-derives the token rather than failing the whole operation.
+   * Two different failures hide behind one method here:
+   *
+   * - **401.** Normal mid-run: access tokens last an hour and a big push
+   *   outlives one. Re-derive the token and go again immediately, once.
+   * - **429, 5xx, a rate-limit 403, a dropped connection.** Drive throttles a
+   *   burst of uploads as a matter of course. Without a backoff every file that
+   *   catches one is reported as a failure, and a push of a large vault comes
+   *   back with a list of files the user is told to worry about but can only fix
+   *   by running it again.
+   *
+   * Retrying a create can in principle produce two Drive files for one path if
+   * the first attempt landed and only its response was lost. `listFolder`
+   * reports that rather than hiding it.
    */
   private async send(spec: RequestSpec): Promise<Result<RequestUrlResponse>> {
-    const first = await this.sendOnce(spec);
-    if (!first.ok) return first;
-    if (first.value.status !== 401) return first;
+    let reauthorized = false;
 
-    this.auth.invalidate();
-    return this.sendOnce(spec);
+    for (let attempt = 1; ; attempt += 1) {
+      const sent = await this.sendOnce(spec);
+
+      if (!sent.ok) {
+        // An auth failure is a decision, not a hiccup: the credentials are
+        // wrong or the user cancelled a sign-in. Only transport failures retry.
+        if (sent.error.kind !== 'network' || attempt >= MAX_ATTEMPTS) return sent;
+        if (!(await this.backoff(attempt, null))) return sent;
+        continue;
+      }
+
+      if (sent.value.status === 401 && !reauthorized) {
+        reauthorized = true;
+        this.auth.invalidate();
+        continue;
+      }
+
+      if (attempt >= MAX_ATTEMPTS || !isRetryable(sent.value)) return sent;
+      if (!(await this.backoff(attempt, retryAfterMs(sent.value)))) return sent;
+    }
+  }
+
+  /**
+   * Waits before the next attempt. False means the user cancelled — stop.
+   *
+   * Exponential, jittered, and capped. The jitter matters: without it a device
+   * that just had three hundred uploads throttled retries all of them in
+   * lockstep and gets throttled again in lockstep.
+   */
+  private async backoff(attempt: number, hintMs: number | null): Promise<boolean> {
+    if (this.cancellation?.isCancelled() === true) return false;
+
+    const ceiling = Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS);
+    const jittered = ceiling / 2 + Math.random() * (ceiling / 2);
+    const total = Math.min(hintMs ?? jittered, MAX_BACKOFF_MS);
+
+    // Slept in slices so Cancel does not have to wait out a twenty-second pause.
+    for (let waited = 0; waited < total; waited += BACKOFF_SLICE_MS) {
+      await sleep(Math.min(BACKOFF_SLICE_MS, total - waited));
+      if (this.cancellation?.isCancelled() === true) return false;
+    }
+    return true;
   }
 
   private async sendOnce(spec: RequestSpec): Promise<Result<RequestUrlResponse>> {
     const token = await this.auth.getAccessToken();
     if (!token.ok) return token;
 
-    const headers: Record<string, string> = { Authorization: `Bearer ${token.value}` };
+    const headers: Record<string, string> = {
+      ...spec.headers,
+      Authorization: `Bearer ${token.value}`,
+    };
 
     try {
       const response = await requestUrl({
@@ -147,7 +307,16 @@ export class DriveClient {
   async ensureFolder(name: string): Promise<Result<DriveFileId>> {
     const query = `mimeType='${FOLDER_MIME}' and name='${escapeQueryValue(name)}' and trashed=false`;
     const response = await this.send({
-      url: buildUrl(DRIVE_FILES, { q: query, fields: `files(${FILE_FIELDS})`, pageSize: '10' }),
+      // Ordered, because Drive allows two folders with one name and returns them
+      // in no particular order. Unordered, a vault whose folder got duplicated
+      // would back up to whichever copy the API happened to list first, and to
+      // the other one tomorrow.
+      url: buildUrl(DRIVE_FILES, {
+        q: query,
+        fields: `files(${FOLDER_FIELDS})`,
+        orderBy: 'createdTime',
+        pageSize: '10',
+      }),
       method: 'GET',
     });
     if (!response.ok) return response;
@@ -177,14 +346,47 @@ export class DriveClient {
   }
 
   /**
+   * True if a cached folder id still names a live folder this client can reach.
+   *
+   * Worth one request per run, because the failure it catches is silent. A
+   * folder that was deleted, moved to the trash, or belongs to the Google
+   * account the user has just switched away from still produces a perfectly
+   * well-formed empty listing. Push reads that as "Drive has nothing", decides
+   * every file in the vault needs re-uploading, and then fails on each one
+   * because the parent does not exist.
+   */
+  async folderIsUsable(folderId: DriveFileId): Promise<Result<boolean>> {
+    const response = await this.send({
+      url: buildUrl(`${DRIVE_FILES}/${encodeURIComponent(folderId)}`, { fields: FOLDER_FIELDS }),
+      method: 'GET',
+    });
+    if (!response.ok) return response;
+
+    const status = response.value.status;
+    // 404: gone, or owned by an account this token no longer speaks for.
+    // 403: still there, no longer ours. Both mean "go and look by name".
+    if (status === 404 || status === 403) return ok(false);
+    if (status < 200 || status >= 300) {
+      return DriveClient.failure(response.value, 'Checking the Drive folder');
+    }
+
+    const body = parseJson(response.value.text);
+    if (!isDriveFileDto(body)) {
+      return err(networkError('Drive returned a folder Geode could not read.'));
+    }
+    return ok(body.mimeType === FOLDER_MIME && body.trashed !== true);
+  }
+
+  /**
    * Lists every Geode file in the folder, following nextPageToken to the end.
    *
    * A partial listing would look like a set of deleted files, so a failure on
    * any page fails the whole call rather than returning what it has.
    */
   async listFolder(folderId: DriveFileId): Promise<Result<FolderListing>> {
-    const files: RemoteFile[] = [];
+    const byPath = new Map<string, RemoteFile>();
     const ignored: string[] = [];
+    const duplicates = new Set<string>();
     let keycheckId: DriveFileId | null = null;
     let pageToken: string | undefined;
 
@@ -218,13 +420,31 @@ export class DriveClient {
           ignored.push(dto.name);
           continue;
         }
-        files.push(file);
+
+        // Drive has no unique-name constraint, so one vault path can end up
+        // held by two files: two devices created the same note in the same
+        // minute, someone copied it in the web UI, or an upload landed and only
+        // its response was lost. Keeping the last one seen would make that
+        // choice depend on page order and hide the other copy completely, which
+        // for a backup means a note that is on Drive and is never restored.
+        const rival = byPath.get(file.path);
+        if (rival === undefined) {
+          byPath.set(file.path, file);
+          continue;
+        }
+        byPath.set(file.path, newerOf(rival, file));
+        duplicates.add(file.path);
       }
 
       pageToken = body.nextPageToken;
     } while (pageToken !== undefined && pageToken.length > 0);
 
-    return ok({ files, keycheckId, ignored });
+    return ok({
+      files: [...byPath.values()],
+      keycheckId,
+      ignored,
+      duplicates: [...duplicates].map((path) => vaultPath(path)),
+    });
   }
 
   /** Downloads a file's bytes. */
@@ -268,6 +488,54 @@ export class DriveClient {
     };
   }
 
+  /**
+   * Uploads through a resumable session, which is the only supported route for
+   * anything over 5 MB.
+   *
+   * Two requests: one that hands Drive the metadata and gets back a session URL
+   * in the `Location` header, and one that puts the bytes there. The bytes go in
+   * a single PUT rather than in chunks — the whole file is already in memory,
+   * having been read and possibly encrypted there, so chunking would buy no
+   * headroom and cost a round trip per chunk.
+   */
+  private async uploadResumable(
+    method: 'POST' | 'PATCH',
+    url: string,
+    metadata: Record<string, unknown>,
+    content: Bytes,
+    what: string,
+  ): Promise<Result<DriveFileDto>> {
+    const opened = await this.send({
+      url,
+      method,
+      contentType: 'application/json; charset=UTF-8',
+      headers: {
+        'X-Upload-Content-Type': 'application/octet-stream',
+        'X-Upload-Content-Length': String(content.length),
+      },
+      body: JSON.stringify(metadata),
+    });
+    if (!opened.ok) return opened;
+    if (opened.value.status < 200 || opened.value.status >= 300) {
+      return DriveClient.failure(opened.value, what);
+    }
+
+    const session = headerValue(opened.value.headers, 'location');
+    if (session === null || session.length === 0) {
+      return err(networkError(`${what} failed: Drive did not open an upload session.`));
+    }
+
+    return this.sendForFile(
+      {
+        url: session,
+        method: 'PUT',
+        contentType: 'application/octet-stream',
+        body: toArrayBuffer(content),
+      },
+      what,
+    );
+  }
+
   /** Creates a new file in the folder. */
   async upload(
     folderId: DriveFileId,
@@ -275,11 +543,20 @@ export class DriveClient {
     content: Bytes,
     properties: GeodeAppProperties,
   ): Promise<Result<DriveFileDto>> {
-    const { body, contentType } = this.buildMultipart(
-      { name, parents: [folderId], appProperties: properties },
-      content,
-    );
+    const metadata = { name, parents: [folderId], appProperties: properties };
+    const what = `Uploading ${name}`;
 
+    if (content.length > MULTIPART_MAX_BYTES) {
+      return this.uploadResumable(
+        'POST',
+        buildUrl(DRIVE_UPLOAD, { uploadType: 'resumable', fields: FILE_FIELDS }),
+        metadata,
+        content,
+        what,
+      );
+    }
+
+    const { body, contentType } = this.buildMultipart(metadata, content);
     return this.sendForFile(
       {
         url: buildUrl(DRIVE_UPLOAD, { uploadType: 'multipart', fields: FILE_FIELDS }),
@@ -287,12 +564,25 @@ export class DriveClient {
         contentType,
         body,
       },
-      `Uploading ${name}`,
+      what,
     );
   }
 
   /** Replaces an existing file's content, leaving its metadata alone. */
   async updateContent(fileId: DriveFileId, content: Bytes): Promise<Result<DriveFileDto>> {
+    if (content.length > MULTIPART_MAX_BYTES) {
+      return this.uploadResumable(
+        'PATCH',
+        buildUrl(`${DRIVE_UPLOAD}/${encodeURIComponent(fileId)}`, {
+          uploadType: 'resumable',
+          fields: FILE_FIELDS,
+        }),
+        {},
+        content,
+        'Updating a file',
+      );
+    }
+
     return this.sendForFile(
       {
         url: buildUrl(`${DRIVE_UPLOAD}/${encodeURIComponent(fileId)}`, {

@@ -25,6 +25,8 @@ export interface DriveFileDto {
   readonly modifiedTime?: string;
   readonly size?: string;
   readonly mimeType?: string;
+  /** True once the file — or any folder above it — is in the Drive trash. */
+  readonly trashed?: boolean;
   readonly appProperties?: Record<string, string>;
 }
 
@@ -42,6 +44,7 @@ export function isDriveFileDto(value: unknown): value is DriveFileDto {
   if (!optionalString(value['modifiedTime'])) return false;
   if (!optionalString(value['size'])) return false;
   if (!optionalString(value['mimeType'])) return false;
+  if (value['trashed'] !== undefined && typeof value['trashed'] !== 'boolean') return false;
 
   const appProperties = value['appProperties'];
   return appProperties === undefined || isStringMap(appProperties);
@@ -151,6 +154,33 @@ export function isDriveErrorDto(value: unknown): value is DriveErrorDto {
   const error = value['error'];
   if (!isRecord(error)) return false;
   return typeof error['code'] === 'number' && typeof error['message'] === 'string';
+}
+
+/**
+ * The machine-readable `reason` codes out of a Drive error body.
+ *
+ * The HTTP status alone is not enough to decide whether to retry. Drive answers
+ * a burst of uploads with 403 and `userRateLimitExceeded`, which is transient
+ * and wants a backoff, using the same status it returns for
+ * `storageQuotaExceeded`, which no amount of waiting will fix. The reason lives
+ * in `error.errors[].reason`; older and stranger error shapes simply yield an
+ * empty list.
+ */
+export function driveErrorReasons(body: unknown): readonly string[] {
+  if (!isRecord(body)) return [];
+  const error = body['error'];
+  if (!isRecord(error)) return [];
+
+  const errors = error['errors'];
+  if (!Array.isArray(errors)) return [];
+
+  const reasons: string[] = [];
+  for (const item of errors) {
+    if (!isRecord(item)) continue;
+    const reason = item['reason'];
+    if (typeof reason === 'string') reasons.push(reason);
+  }
+  return reasons;
 }
 
 /**

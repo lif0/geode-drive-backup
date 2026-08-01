@@ -150,6 +150,11 @@ has a file at an incoming path and GeodeDrive cannot prove the two are identical
 written as `note (from drive).md` instead — repeated collisions become `(from drive 2)`,
 `(from drive 3)` and so on. **Pull never deletes and never overwrites.**
 
+"Already has a file there" is decided case-insensitively, even on Linux. Drive keeps `Note.md` and
+`note.md` apart; APFS, NTFS and the exFAT of an Android SD card do not, and writing the second one
+would silently destroy the first. On a genuinely case-sensitive filesystem the cost is one needless
+`(from drive)` copy; the cost of guessing the other way is a lost note.
+
 ### Stopping a long run
 
 Push and pull can be stopped at any point: press **Cancel** on the progress notice, or run **Cancel
@@ -175,6 +180,59 @@ Push finished: 12 uploaded, 3 updated, 486 unchanged.
 A **conflict** means the Drive copy changed since this device last wrote it. GeodeDrive will not guess
 which side wins, so it skips the file and tells you. Resolve it by pulling — you get both copies
 side by side — or by deciding manually.
+
+A summary can also carry a **warning**: a path held by two Drive files, or files in the folder that
+GeodeDrive did not write. Neither shows up in the counts, and both mean the backup is not quite the
+shape you think it is.
+
+---
+
+## Choosing what gets backed up
+
+A vault is rarely only notes. People keep build output, binaries, whole program folders and large
+media in there, and none of it belongs in a backup that exists to protect writing.
+
+Two switches, both off by default, both using `.gitignore` syntax:
+
+| Setting                              | What it does                                          |
+| ------------------------------------ | ----------------------------------------------------- |
+| **Respect the vault's `.gitignore`** | Reads `.gitignore` from the vault root and applies it |
+| **Never upload these paths**         | Your own rules, applied after the file's              |
+
+Because the settings lines come second, a `!` there can bring back something the repository's own
+ignore file excluded — a vault is a repository first and a backup second, and the two do not always
+want the same files.
+
+```gitignore
+bin/                    # a folder, at any depth: also Projects/app/bin
+[Oo]bj/                 # character classes work
+/Drafts                 # leading slash pins it to the vault root
+*.mp4                   # any depth, any folder
+!Notes/demo.mp4         # …except this one
+**/.idea/**/*.iml       # ** crosses folder boundaries
+```
+
+Supported: `#` comments, `!` negation with last-match-wins, `/` anchoring, trailing `/` for
+directories, `*`, `?`, `**`, and `[abc]` / `[!a-z]` classes. Not supported: nested `.gitignore`
+files below the vault root — only the root one is read.
+
+Three things worth knowing before you turn this on:
+
+- **A rule without a slash matches at any depth.** `test/` excludes `test/` at the root _and_
+  `Notes/test/`. That is git's rule, not an invention, and it is the usual way to lose a folder of
+  real notes by accident. Press **Preview exclusions** in settings: it applies the rules to this
+  vault and lists what they would leave out, without uploading anything.
+- **Excluding is not deleting.** A file that stops being backed up keeps its copy on Drive.
+  GeodeDrive will not upload it, will not update it, and — even with deletion mirroring on — will not
+  delete it. A backup that forgets a file the day you exclude it is not a backup.
+- **Exclusions apply to push, not to pull.** They govern what leaves this device. Anything already
+  in the backup stays restorable, which is the point of having one.
+
+An excluded file is never opened, so the gigabytes you exclude stop costing anything on every push
+rather than being read and hashed only to be skipped. The summary says how many were left out.
+
+Obsidian hides dotfiles and dot-folders from plugins altogether, so `.obsidian/`, `.git/`, `.idea/`
+and friends were never in the backup and rules about them do nothing either way.
 
 ---
 
@@ -281,10 +339,41 @@ Consequences worth knowing:
   is never opened. On a large vault where little changed, a push stats every file but reads almost
   none of them. Staleness is still decided only by sha256 — mtime is never evidence that a file
   changed, only that it might have.
+- That shortcut needs the clock to be finer than the edits. FAT32 — which is what an Android SD card
+  usually is — rounds timestamps to two seconds, so an edit landing inside the same tick that leaves
+  the length alone would be invisible to it, forever. A hash taken from a file whose timestamp is
+  younger than one tick is therefore recorded as uncacheable and the file is read once more next time.
+- Pull takes no such shortcut and hashes everything. It is the operation you run when something has
+  already gone wrong, and the cost of guessing there is deciding a local file matches the backup and
+  declining to bring the backup down beside it.
+- Paths are normalised to Unicode NFC. macOS hands back `é` as `e` plus a combining accent while
+  Windows and Linux use a single code point; left alone, the same note goes up twice under two
+  different names and conflicts with itself forever.
 - Losing `data.json` is not fatal. The next push sees files it has no record of, finds them already
   on Drive, and reports them as conflicts rather than clobbering them. Pull rebuilds the index.
+- An index entry for a path that is gone from the vault **and** from Drive is dropped, so
+  `data.json` does not grow forever and the tracked-file count stays honest.
 - `.obsidian/` is never backed up. That is where `data.json` lives — and with it your Google refresh
   token.
+
+### Talking to Drive
+
+- **Throttling is expected, not an error.** Drive answers a burst of uploads with 429 or a transient
+  5xx as a matter of course. Those are retried with a jittered exponential backoff, honouring
+  `Retry-After`, up to five attempts. A rate-limit 403 is retried; a `storageQuotaExceeded` 403 —
+  the one that means your Drive is full — is not, because waiting will not fix it. Cancel is checked
+  while waiting, so a stop does not have to sit out a twenty-second pause.
+- **A run that keeps failing the same way stops.** Five consecutive network or credential failures
+  end the run and say so, instead of grinding through two thousand files to report one problem two
+  thousand times. Everything already transferred is recorded.
+- **Files over 5 MB go through a resumable upload session.** Google documents the multipart route
+  for 5 MB and under, and a vault's big attachments are exactly the files a backup must not drop.
+- **The cached folder id is checked, not trusted.** Trash the Drive folder or connect a different
+  Google account and listing it still succeeds — it just comes back empty, which reads as "Drive
+  lost the whole vault". One request per run turns that into a lookup by name.
+- **Two Drive files can claim one vault path.** Drive has no unique-name constraint, so two devices
+  creating the same note in the same minute produces exactly that. GeodeDrive uses the newer one, makes
+  the same choice on every device, and says so in the summary rather than hiding the other copy.
 
 ### Storage layout in Drive
 
@@ -313,19 +402,24 @@ fallback lookup searches by name with no parent constraint and finds it wherever
 
 ## Settings reference
 
-| Setting                       | Default      | Notes                                                 |
-| ----------------------------- | ------------ | ----------------------------------------------------- |
-| Client ID / secret            | empty        | Your own Google OAuth client                          |
-| Sign-in method                | Device       | Switch to PKCE only if Google rejects the device flow |
-| Drive folder name             | `Geode`      | Changing it after a push points at a new folder       |
-| Encrypt selected paths        | off          | Enables the prefix list below                         |
-| Encrypted paths               | empty        | One prefix per line                                   |
-| Ask for the passphrase        | Once/session | Or on every push and pull                             |
-| **Mirror deletions to Drive** | **off**      | On, a local delete permanently removes the Drive copy |
+| Setting                        | Default      | Notes                                                  |
+| ------------------------------ | ------------ | ------------------------------------------------------ |
+| Client ID / secret             | empty        | Your own Google OAuth client                           |
+| Sign-in method                 | Device       | Switch to PKCE only if Google rejects the device flow  |
+| Drive folder name              | `Geode`      | Changing it after a push points at a new folder        |
+| Respect the vault's .gitignore | off          | Reads the root `.gitignore` and skips what it excludes |
+| Never upload these paths       | empty        | Your own rules, `.gitignore` syntax, applied after it  |
+| Encrypt selected paths         | off          | Enables the prefix list below                          |
+| Encrypted paths                | empty        | One prefix per line                                    |
+| Ask for the passphrase         | Once/session | Or on every push and pull                              |
+| **Mirror deletions to Drive**  | **off**      | On, a local delete permanently removes the Drive copy  |
 
 > **On mirroring deletions:** with it off, a file you delete locally stays in the backup — which is
 > usually the entire point of having one. With it on, pushing deletes the Drive copy permanently,
 > bypassing the Drive trash. A backup that forgets what you deleted cannot get it back for you.
+>
+> Exclusions are exempt. Even with mirroring on, adding a path to `.gitignore` never deletes its
+> Drive copy — an excluded file is one GeodeDrive stops touching, not one you asked it to erase.
 
 ---
 
@@ -348,9 +442,9 @@ src/
   main.ts        lifecycle, commands, wiring — no business logic
   types.ts       branded types, Result, AppError
   settings.ts    settings shape, defaults, migration
-  core/          pure logic: container, kdf, path-codec, selector, diff, bytes
+  core/          pure logic: container, kdf, path-codec, selector, ignore, diff, bytes
   drive/         auth-provider, device-flow, pkce-flow, client, dto
-  ops/           push, pull, index-store
+  ops/           push, pull, folder, index-store
   ui/            settings-tab, modals, progress
 test/            vitest over src/core only — no mocks, no Obsidian stub
 tools/           standalone decryptor, vector generator, version bump

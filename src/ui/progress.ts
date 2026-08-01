@@ -54,6 +54,7 @@ export function renderSummary(summary: OperationSummary): string {
   if (summary.renamed > 0) parts.push(`${String(summary.renamed)} kept side by side`);
   if (summary.deleted > 0) parts.push(`${String(summary.deleted)} deleted from Drive`);
   if (summary.skipped > 0) parts.push(`${String(summary.skipped)} unchanged`);
+  if (summary.excluded > 0) parts.push(`${String(summary.excluded)} excluded`);
 
   const done = parts.length > 0 ? parts.join(', ') : 'nothing to do';
   lines.push(summary.cancelled ? `${verb} stopped: ${done}.` : `${verb} finished: ${done}.`);
@@ -80,6 +81,13 @@ export function renderSummary(summary: OperationSummary): string {
     if (summary.failures.length > 5) {
       lines.push(`  …and ${String(summary.failures.length - 5)} more`);
     }
+  }
+
+  // Last, because a warning is about the shape of the backup rather than about
+  // this run, and the counts above are what the user came to read.
+  for (const warning of summary.warnings) {
+    lines.push('');
+    lines.push(warning);
   }
 
   return lines.join('\n');

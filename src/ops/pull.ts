@@ -18,7 +18,8 @@ import type {
   VaultIo,
   VaultPath,
 } from '../types';
-import { cancelledError, cryptoError, driveFileId, err, ok } from '../types';
+import { cancelledError, cryptoError, err, ok } from '../types';
+import { listingWarnings, resolveFolder } from './folder';
 import type { IndexStore } from './index-store';
 
 /**
@@ -50,27 +51,31 @@ export interface PullDeps {
 /** Files processed between index writes, so an interrupted pull resumes. */
 const INDEX_SAVE_EVERY = 25;
 
-async function resolveFolder(deps: PullDeps): Promise<Result<DriveFileId>> {
-  const cached = deps.settings.folderId;
-  if (cached !== null && cached.length > 0) return ok(driveFileId(cached));
-
-  const ensured = await deps.drive.ensureFolder(deps.settings.folderName);
-  if (!ensured.ok) return ensured;
-
-  await deps.rememberFolderId(ensured.value);
-  return ensured;
-}
+/** As in push: stop grinding once every file is failing for the same reason. */
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 /**
  * Hashes what is already in the vault, so the planner can tell "same file" from
  * "different file with the same name".
+ *
+ * Every file is read, with no mtime+size shortcut. Push takes that shortcut and
+ * is right to: the cost of being wrong there is a missed upload, which the next
+ * push fixes. Pull is the operation people run when something has already gone
+ * wrong, and the cost of being wrong here is deciding a local file matches the
+ * backup and declining to bring the backup down beside it. On a vault this slow
+ * to hash the user can now press Cancel, which is what the check below is for —
+ * this phase used to ignore cancellation until it was over.
  */
-async function collectLocalFiles(deps: PullDeps): Promise<LocalFile[]> {
+async function collectLocalFiles(deps: PullDeps): Promise<Result<LocalFile[]>> {
   const stats = await deps.vault.listFiles();
   const files: LocalFile[] = [];
 
   deps.progress.begin('Reading vault', stats.length);
   for (const stat of stats) {
+    if (deps.cancellation.isCancelled()) {
+      return err(cancelledError('Cancelled while reading the vault.'));
+    }
+
     try {
       const bytes = await deps.vault.readBinary(stat.path);
       files.push({
@@ -92,7 +97,7 @@ async function collectLocalFiles(deps: PullDeps): Promise<LocalFile[]> {
     deps.progress.advance(stat.path);
   }
 
-  return files;
+  return ok(files);
 }
 
 /**
@@ -158,7 +163,9 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
   if (!unlocked.ok) return unlocked;
 
   const localFiles = await collectLocalFiles(deps);
-  const plan = planPull(listing.value.files, localFiles, deps.index.snapshot());
+  if (!localFiles.ok) return localFiles;
+
+  const plan = planPull(listing.value.files, localFiles.value, deps.index.snapshot());
 
   const remoteByPath = new Map<string, RemoteFile>(listing.value.files.map((f) => [f.path, f]));
 
@@ -166,12 +173,14 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
   let renamed = 0;
   let skipped = 0;
   const failures: { path: VaultPath; message: string }[] = [];
+  const warnings = listingWarnings(listing.value);
 
   const work = plan.actions.filter((action) => action.type !== 'skip');
   deps.progress.begin('Pulling', work.length);
 
   let cancelled = deps.cancellation.isCancelled();
   let sinceSave = 0;
+  let consecutiveFailures = 0;
 
   for (const action of plan.actions) {
     if (action.type === 'skip') {
@@ -187,8 +196,11 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
     if (outcome.ok) {
       if (action.type === 'download') downloaded += 1;
       else renamed += 1;
+      consecutiveFailures = 0;
     } else {
       failures.push({ path: action.path, message: outcome.error.message });
+      const systemic = outcome.error.kind === 'network' || outcome.error.kind === 'auth';
+      consecutiveFailures = systemic ? consecutiveFailures + 1 : 0;
     }
     deps.progress.advance(action.writeTo);
 
@@ -196,6 +208,14 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
     if (sinceSave >= INDEX_SAVE_EVERY) {
       await deps.index.save();
       sinceSave = 0;
+    }
+
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      warnings.push(
+        `Stopped early: ${String(consecutiveFailures)} files in a row failed the same way. ` +
+          'Everything already downloaded is on disk — run the pull again once the problem is fixed.',
+      );
+      break;
     }
   }
 
@@ -210,8 +230,12 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
     renamed,
     deleted: 0,
     skipped,
+    // Exclusions govern what leaves the device, not what comes back to it. A
+    // path you stopped uploading is still one you must be able to restore.
+    excluded: 0,
     conflicts: [],
     failures,
+    warnings,
   });
 }
 

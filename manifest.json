@@ -1,10 +1,10 @@
 {
   "id": "geode-drive-backup",
   "name": "GeodeDrive",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "minAppVersion": "1.12.0",
   "description": "Backup, not sync. Push your vault to your own Google Drive, with optional encryption.",
-  "author": "Kadi Gasanguseynov",
+  "author": "lif0",
   "authorUrl": "https://github.com/lif0",
   "isDesktopOnly": false
 }

@@ -31,6 +31,18 @@ export interface GeodeSettings {
   folderName: string;
   /** Cached id of the Drive app folder, so we do not search for it every run. */
   folderId: string | null;
+  /**
+   * Read the vault's own root `.gitignore` and skip what it excludes.
+   *
+   * Off by default. Turning it on shrinks what gets backed up, and a backup
+   * tool must never do that on the user's behalf.
+   */
+  useGitignore: boolean;
+  /**
+   * Extra exclusion lines in `.gitignore` syntax, applied after the file's own,
+   * so a `!` here can bring back something the repository excluded.
+   */
+  excludedPaths: string[];
   encryptionEnabled: boolean;
   /** Vault path prefixes whose files are encrypted before upload. */
   encryptedPrefixes: string[];
@@ -52,6 +64,8 @@ export const DEFAULT_SETTINGS = {
   authFlow: 'device',
   folderName: 'Geode',
   folderId: null,
+  useGitignore: false,
+  excludedPaths: [],
   encryptionEnabled: false,
   encryptedPrefixes: [],
   passphrasePrompt: 'once-per-session',
@@ -113,6 +127,7 @@ function readIndex(source: Record<string, unknown>, key: string): Record<string,
 export function defaultSettings(): GeodeSettings {
   return {
     ...DEFAULT_SETTINGS,
+    excludedPaths: [],
     encryptedPrefixes: [],
     index: {},
   };
@@ -145,6 +160,8 @@ export function migrateSettings(raw: unknown): GeodeSettings {
     authFlow,
     folderName: folderName.trim().length > 0 ? folderName.trim() : DEFAULT_SETTINGS.folderName,
     folderId: readNullableString(raw, 'folderId'),
+    useGitignore: readBoolean(raw, 'useGitignore', false),
+    excludedPaths: readStringArray(raw, 'excludedPaths'),
     encryptionEnabled: readBoolean(raw, 'encryptionEnabled', false),
     encryptedPrefixes: readStringArray(raw, 'encryptedPrefixes'),
     passphrasePrompt,

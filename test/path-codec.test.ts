@@ -61,6 +61,17 @@ describe('decodePath', () => {
     expect(decodePath('_____w').ok).toBe(false);
   });
 
+  it('decodes an NFD name to the same path as its NFC twin', () => {
+    // A note written on a Mac goes up under an NFD name; the same note on a PC
+    // is NFC. Both have to come back as one path or the vault gets two of it.
+    const nfd = 'Journal/e\u0301t\u00e9.md';
+    const nfc = 'Journal/\u00e9t\u00e9.md';
+
+    const fromMac = decodePath(Buffer.from(nfd, 'utf8').toString('base64url'));
+    expect(fromMac.ok && fromMac.value).toBe(nfc);
+    expect(encodePath(vaultPath(nfd))).toBe(encodePath(vaultPath(nfc)));
+  });
+
   it('refuses paths that would escape the vault', () => {
     // These are well-formed base64url of hostile paths, so only the path rules
     // stop them. A Drive folder is shared storage; its names are not trusted.

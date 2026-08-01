@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { collisionPath, planPull, planPush } from '../src/core/diff';
 import type { PushOptions } from '../src/core/diff';
+import { NO_IGNORE_RULES, parseIgnore } from '../src/core/ignore';
 import { encodePath } from '../src/core/path-codec';
 import type {
   DriveFileId,
@@ -63,7 +64,13 @@ const PLAIN: PushOptions = {
   encryptionEnabled: false,
   encryptedPrefixes: [],
   mirrorDeletions: false,
+  ignore: NO_IGNORE_RULES,
 };
+
+/** PLAIN plus exclusion rules, written as .gitignore lines. */
+function excluding(...lines: string[]): PushOptions {
+  return { ...PLAIN, ignore: parseIgnore(lines.join('\n')) };
+}
 
 /* -------------------------------- push ------------------------------------ */
 
@@ -157,9 +164,9 @@ describe('planPush', () => {
     const drive = [remote('Journal/a.md', 'md5-1'), remote('b.md', 'md5-2')];
 
     const plan = planPush(files, state, drive, {
+      ...PLAIN,
       encryptionEnabled: true,
       encryptedPrefixes: ['Journal'],
-      mirrorDeletions: false,
     });
 
     expect(plan.actions.every((action) => action.type === 'skip')).toBe(true);
@@ -167,9 +174,9 @@ describe('planPush', () => {
 
   describe('encryption selection', () => {
     const options: PushOptions = {
+      ...PLAIN,
       encryptionEnabled: true,
       encryptedPrefixes: ['Journal'],
-      mirrorDeletions: false,
     };
 
     it('flags only files under a configured prefix', () => {
@@ -219,9 +226,51 @@ describe('planPush', () => {
       expect(planPush([], state, [], { ...PLAIN, mirrorDeletions: true }).actions).toEqual([]);
     });
 
+    it('forgets an index entry gone from both sides', () => {
+      expect(planPush([], state, [], PLAIN).forget).toEqual(['gone.md']);
+    });
+
+    it('keeps the entry while Drive still holds the file', () => {
+      expect(planPush([], state, drive, PLAIN).forget).toEqual([]);
+    });
+
     it('ignores a Drive file that was never indexed', () => {
       // Someone else's file in the folder, or one this device has not pulled.
       expect(planPush([], index({}), [remote('theirs.md')], PLAIN).actions).toEqual([]);
+    });
+  });
+
+  describe('exclusions', () => {
+    it('leaves an excluded file out of the plan entirely', () => {
+      const plan = planPush(
+        [local('bin/tool.exe'), local('note.md')],
+        index({}),
+        [],
+        excluding('bin/'),
+      );
+      expect(plan.actions).toEqual([{ type: 'upload', path: 'note.md', encrypt: false }]);
+    });
+
+    it('never deletes the Drive copy of a newly excluded file', () => {
+      // The regression that would make this feature dangerous: excluding a
+      // folder must not be read as deleting it, or adding a line to .gitignore
+      // would wipe the backup of everything it covers.
+      const state = index({ 'bin/tool.exe': entry('x', 'md5-a') });
+      const drive = [remote('bin/tool.exe', 'md5-a', 'drive-7')];
+
+      const plan = planPush([local('bin/tool.exe')], state, drive, {
+        ...excluding('bin/'),
+        mirrorDeletions: true,
+      });
+
+      expect(plan.actions).toEqual([{ type: 'skip', path: 'bin/tool.exe', reason: 'excluded' }]);
+      expect(plan.forget).toEqual([]);
+    });
+
+    it('does not re-upload an excluded file that is already on Drive', () => {
+      const state = index({ 'bin/tool.exe': entry('x', 'md5-a') });
+      const plan = planPush([local('bin/tool.exe', 'y')], state, [], excluding('bin/'));
+      expect(plan.actions).toEqual([{ type: 'skip', path: 'bin/tool.exe', reason: 'excluded' }]);
     });
   });
 
@@ -314,6 +363,63 @@ describe('planPull', () => {
   it('orders actions by path so plans are reproducible', () => {
     const plan = planPull([remote('c.md'), remote('a.md'), remote('b.md')], [], index({}));
     expect(plan.actions.map((action) => action.path)).toEqual(['a.md', 'b.md', 'c.md']);
+  });
+
+  describe('names that collide only on a case-insensitive filesystem', () => {
+    it('does not write over a local file that differs only in case', () => {
+      // APFS, NTFS and the exFAT of an SD card treat these as one file, so
+      // writing note.md here would destroy Note.md. Drive kept them apart.
+      const plan = planPull([remote('note.md')], [local('Note.md')], index({}));
+      expect(plan.actions).toEqual([
+        {
+          type: 'rename-on-collision',
+          path: 'note.md',
+          fileId: 'id-note.md',
+          writeTo: 'note (from drive).md',
+        },
+      ]);
+    });
+
+    it('does not reuse a collision name that differs only in case', () => {
+      const plan = planPull(
+        [remote('note.md')],
+        [local('Note.md'), local('NOTE (from drive).md')],
+        index({}),
+      );
+      expect(
+        plan.actions.map((action) => (action.type === 'skip' ? null : action.writeTo)),
+      ).toEqual(['note (from drive 2).md']);
+    });
+
+    it('still recognises an exact path as unchanged', () => {
+      const plan = planPull(
+        [remote('note.md', 'md5-a')],
+        [local('note.md', 'x')],
+        index({ 'note.md': entry('x', 'md5-a') }),
+      );
+      expect(plan.actions).toEqual([
+        { type: 'skip', path: 'note.md', reason: 'already-identical' },
+      ]);
+    });
+  });
+
+  it('treats the two Unicode spellings of one name as one path', () => {
+    // macOS hands back NFD, Windows NFC. Left alone, the same note arrives as
+    // two files and every push after that is a conflict.
+    // Spelled with escapes so the test does not depend on how this file was saved.
+    const nfd = 'e\u0301.md';
+    const nfc = '\u00e9.md';
+    expect(nfd).not.toBe(nfc);
+
+    const plan = planPull([remote(nfd)], [local(nfc)], index({}));
+    expect(plan.actions).toEqual([
+      {
+        type: 'rename-on-collision',
+        path: nfc,
+        fileId: `id-${nfd}`,
+        writeTo: '\u00e9 (from drive).md',
+      },
+    ]);
   });
 });
 

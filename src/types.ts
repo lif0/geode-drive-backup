@@ -37,12 +37,28 @@ export function isValidVaultPath(raw: string): boolean {
   return !raw.split('/').some((segment) => segment === '..' || segment === '.' || segment === '');
 }
 
-/** Builds a VaultPath. Throws on an invalid path — callers must validate first. */
+/**
+ * Builds a VaultPath, normalising it to Unicode NFC.
+ *
+ * macOS and iOS hand back file names in NFD — `é` as `e` plus a combining
+ * accent — while Windows, Linux and Android use NFC. The two forms are
+ * different byte strings, so the same note base64-encodes to two different
+ * Drive names, and a vault touched from a Mac and a PC ends up with a duplicate
+ * of every accented file and a conflict that never resolves.
+ *
+ * Normalising here fixes it at the single choke point every path passes
+ * through: the vault enumerator, `decodePath`, and the index reader. Drive files
+ * written under an NFD name keep working — they decode to the same NFC path, so
+ * they are matched and updated by id rather than uploaded again.
+ *
+ * Throws on an invalid path — callers must validate first.
+ */
 export function vaultPath(raw: string): VaultPath {
-  if (!isValidVaultPath(raw)) {
+  const normalized = raw.normalize('NFC');
+  if (!isValidVaultPath(normalized)) {
     throw new Error(`Not a valid vault path: ${JSON.stringify(raw)}`);
   }
-  return raw as VaultPath;
+  return normalized as VaultPath;
 }
 
 /** Builds a DriveFileId. Throws if empty. */
@@ -254,7 +270,12 @@ export interface RemoteFile {
 
 /** Why a file was left alone. */
 export type SkipReason =
-  'unchanged' | 'remote-changed-locally-unchanged' | 'deleted-locally' | 'already-identical';
+  | 'unchanged'
+  | 'remote-changed-locally-unchanged'
+  | 'deleted-locally'
+  | 'already-identical'
+  /** Matched an exclusion rule. Its Drive copy, if any, is left untouched. */
+  | 'excluded';
 
 /** One step of a push. Produced by planPush, executed by ops/push.ts. */
 export type PushAction =
@@ -288,6 +309,12 @@ export type PullAction =
 /** An ordered push plan. */
 export interface PushPlan {
   readonly actions: readonly PushAction[];
+  /**
+   * Index entries describing a path that is gone from the vault AND from Drive.
+   * Nothing to do for them but forget them, which is not an action worth
+   * counting or showing progress for.
+   */
+  readonly forget: readonly VaultPath[];
 }
 
 /** An ordered pull plan. */
@@ -310,8 +337,16 @@ export interface OperationSummary {
   readonly renamed: number;
   readonly deleted: number;
   readonly skipped: number;
+  /** Local files an exclusion rule kept out of the backup. Never read, never sent. */
+  readonly excluded: number;
   readonly conflicts: readonly VaultPath[];
   readonly failures: readonly { readonly path: VaultPath; readonly message: string }[];
+  /**
+   * Things the user should know that are neither a per-file failure nor a
+   * conflict: duplicate Drive entries, names Geode could not decode, a run
+   * abandoned because the network went away.
+   */
+  readonly warnings: readonly string[];
 }
 
 /**

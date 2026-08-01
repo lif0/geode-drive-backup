@@ -223,3 +223,28 @@ export function formatBytes(bytes: number): string {
   // Whole bytes never want a decimal; anything scaled reads better with one.
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${BYTE_UNITS[unit] ?? 'B'}`;
 }
+
+/** A transfer speed, as `12.4 MB/s`. */
+export function formatRate(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '—';
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/**
+ * A rough duration, as `45s`, `4 min` or `1 h 12 min`.
+ *
+ * Deliberately coarse. The number it describes is an extrapolation from an
+ * average, and showing it to the second would claim a precision it does not
+ * have.
+ */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  if (seconds < 60) return `${String(Math.max(1, Math.round(seconds)))}s`;
+
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${String(minutes)} min`;
+
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${String(hours)} h` : `${String(hours)} h ${String(rest)} min`;
+}

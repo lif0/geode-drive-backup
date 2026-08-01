@@ -1,6 +1,6 @@
 import { Notice } from 'obsidian';
 
-import { formatBytes } from '../core/bytes';
+import { formatBytes, formatDuration, formatRate } from '../core/bytes';
 import type { AppError, OperationSummary, ProgressReporter, VaultPath } from '../types';
 
 /**
@@ -45,6 +45,8 @@ export interface ProgressSnapshot {
   readonly bytesDone: number;
   /** 0 for a phase that moves no bytes, which hides the byte counters. */
   readonly bytesTotal: number;
+  /** When this phase began, for working out a rate. 0 when nothing is running. */
+  readonly startedAt: number;
   /** Set only while a file is in flight, so the second bar knows what to fill. */
   readonly file: FileProgress | null;
   /** The last path touched. Phases with no per-file bar still have one of these. */
@@ -62,6 +64,7 @@ const IDLE: ProgressSnapshot = {
   filesTotal: 0,
   bytesDone: 0,
   bytesTotal: 0,
+  startedAt: 0,
   file: null,
   detail: '',
   note: '',
@@ -93,6 +96,7 @@ export function renderSummary(summary: OperationSummary): string {
   if (summary.uploaded > 0) parts.push(`${String(summary.uploaded)} uploaded`);
   if (summary.updated > 0) parts.push(`${String(summary.updated)} updated`);
   if (summary.downloaded > 0) parts.push(`${String(summary.downloaded)} downloaded`);
+  if (summary.moved > 0) parts.push(`${String(summary.moved)} moved on Drive`);
   if (summary.renamed > 0) parts.push(`${String(summary.renamed)} kept side by side`);
   if (summary.deleted > 0) parts.push(`${String(summary.deleted)} deleted from Drive`);
   if (summary.skipped > 0) parts.push(`${String(summary.skipped)} unchanged`);
@@ -203,6 +207,7 @@ export class ProgressHub implements ProgressReporter {
       label,
       filesTotal: totalFiles,
       bytesTotal: totalBytes,
+      startedAt: Date.now(),
       // A new phase within one run must not wipe what the run already reported.
       summary: null,
       error: null,
@@ -292,4 +297,24 @@ export class ProgressHub implements ProgressReporter {
 export function renderBytes(done: number, total: number): string {
   if (total <= 0) return '';
   return `${formatBytes(done)} of ${formatBytes(total)}`;
+}
+
+/** Nothing is claimed about the speed until a run has been going this long. */
+const RATE_SETTLE_MS = 3000;
+
+/**
+ * Speed and time remaining, or empty until there is enough to say.
+ *
+ * The single most useful number on the panel when a push feels slow, because it
+ * settles the only question that matters: a steady 15 MB/s is the connection
+ * doing its best and nothing here will improve it, while 400 KB/s on a fast
+ * line means the time is going somewhere other than the wire.
+ */
+export function renderRate(snapshot: ProgressSnapshot, now: number): string {
+  const elapsed = now - snapshot.startedAt;
+  if (snapshot.bytesTotal <= 0 || snapshot.bytesDone <= 0 || elapsed < RATE_SETTLE_MS) return '';
+
+  const rate = (snapshot.bytesDone / elapsed) * 1000;
+  const left = (snapshot.bytesTotal - snapshot.bytesDone) / rate;
+  return `${formatRate(rate)} · about ${formatDuration(left)} left`;
 }

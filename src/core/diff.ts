@@ -1,4 +1,6 @@
 import type {
+  DriveFileId,
+  IndexEntry,
   LocalFile,
   LocalIndex,
   PullAction,
@@ -83,11 +85,113 @@ export function foldPath(path: string): string {
 }
 
 /**
+ * A Drive file whose vault path is gone, and which could therefore be the file
+ * that turned up somewhere else under a new name.
+ */
+interface MoveCandidate {
+  readonly path: VaultPath;
+  readonly entry: IndexEntry;
+  readonly fileId: DriveFileId;
+  /** What Drive says the bytes are: a container, or the plaintext. */
+  readonly encryptedFlag: boolean;
+  /** Whether the rule at the OLD path asked for encryption. */
+  readonly wasEncrypted: boolean;
+}
+
+/**
+ * Indexes, by content hash, every file that vanished from the vault but is still
+ * on Drive intact.
+ *
+ * These are the only files a move may be built from. Three conditions, and each
+ * one is load-bearing:
+ *
+ * - the path is gone from the vault, so a file that was COPIED rather than moved
+ *   is never a candidate and its Drive copy is never touched;
+ * - Drive still holds it, so there is something to rename;
+ * - the md5 still matches the index, so a file another device rewrote keeps its
+ *   ordinary conflict handling instead of being quietly renamed away.
+ *
+ * Excluded paths are left out: a file that an ignore rule now covers is not
+ * missing, and its Drive copy is not the plugin's to move.
+ */
+function moveCandidates(
+  index: LocalIndex,
+  localPaths: ReadonlySet<string>,
+  remoteByPath: ReadonlyMap<string, RemoteFile>,
+  options: PushOptions,
+): Map<string, MoveCandidate[]> {
+  const byHash = new Map<string, MoveCandidate[]>();
+
+  for (const path of Object.keys(index).sort(comparePaths)) {
+    if (localPaths.has(path)) continue;
+
+    const typedPath = vaultPath(path);
+    if (isIgnored(options.ignore, typedPath)) continue;
+
+    const entry = index[typedPath];
+    const remoteFile = remoteByPath.get(path);
+    if (entry === undefined || remoteFile === undefined) continue;
+    if (remoteWasRewritten(entry.remoteMd5, remoteFile.md5)) continue;
+
+    const candidates = byHash.get(entry.sha256) ?? [];
+    candidates.push({
+      path: typedPath,
+      entry,
+      fileId: remoteFile.id,
+      encryptedFlag: remoteFile.encryptedFlag,
+      wasEncrypted:
+        options.encryptionEnabled && shouldEncrypt(typedPath, options.encryptedPrefixes),
+    });
+    byHash.set(entry.sha256, candidates);
+  }
+
+  return byHash;
+}
+
+/**
+ * Takes the vanished file whose bytes these are, and spends it.
+ *
+ * Spent, because two local files with identical contents must not both claim the
+ * same Drive copy: the first gets the rename, the second is uploaded normally.
+ *
+ * The encryption rules have to agree on both sides before a rename is allowed. A
+ * rename moves bytes that are already sealed, or already not; a path that wants
+ * the other of those needs the file encrypted or decrypted, and only an upload
+ * can do that. Both the rule at the old path and what Drive says it stored are
+ * checked, because either one disagreeing means the answer is not certain.
+ */
+function takeMove(
+  candidates: Map<string, MoveCandidate[]>,
+  file: LocalFile,
+  encrypt: boolean,
+): MoveCandidate | null {
+  const pool = candidates.get(file.sha256);
+  if (pool === undefined) return null;
+
+  const at = pool.findIndex(
+    (candidate) =>
+      candidate.entry.size === file.size &&
+      candidate.wasEncrypted === encrypt &&
+      candidate.encryptedFlag === encrypt,
+  );
+  if (at === -1) return null;
+
+  const taken = pool[at];
+  pool.splice(at, 1);
+  if (pool.length === 0) candidates.delete(file.sha256);
+  return taken ?? null;
+}
+
+/**
  * Decides what a push should do to each local file.
  *
  * Never plans an overwrite of a Drive file that changed since the last push —
  * those become `conflict` and are reported, not resolved. Geode is a backup
  * tool; it has no merge.
+ *
+ * A path with no index entry is usually a new file, but it can also be an old
+ * one that moved. When some vanished path held exactly these bytes, the Drive
+ * copy is renamed instead of being uploaded again — see `moveCandidates`.
  *
  * Does NOT read files or compute hashes: `local[].sha256` must already be the
  * plaintext digest.
@@ -105,6 +209,10 @@ export function planPush(
   const localPaths = new Set<string>(included.map((file) => file.path));
   const actions: PushAction[] = [];
 
+  const candidates = moveCandidates(index, localPaths, remoteByPath, options);
+  /** Source paths spent on a move. Their Drive copy left with the file. */
+  const moved = new Set<string>();
+
   const sortedLocal = [...included].sort((a, b) => comparePaths(a.path, b.path));
 
   for (const file of sortedLocal) {
@@ -117,10 +225,24 @@ export function planPush(
       // Nothing in the index. If Drive already has this path it was written by
       // someone else, or by this vault before the index was lost — either way we
       // do not know what is in it, so we refuse to overwrite.
-      if (remoteFile === undefined) {
+      if (remoteFile !== undefined) {
+        actions.push({ type: 'conflict', path: file.path, fileId: remoteFile.id });
+        continue;
+      }
+
+      // Unindexed and unknown to Drive under this name — but the bytes may
+      // already be up there under the name this file used to have.
+      const source = takeMove(candidates, file, encrypt);
+      if (source === null) {
         actions.push({ type: 'upload', path: file.path, encrypt });
       } else {
-        actions.push({ type: 'conflict', path: file.path, fileId: remoteFile.id });
+        moved.add(source.path);
+        actions.push({
+          type: 'move-remote',
+          path: file.path,
+          from: source.path,
+          fileId: source.fileId,
+        });
       }
       continue;
     }
@@ -151,6 +273,10 @@ export function planPush(
   const forget: VaultPath[] = [];
   for (const path of indexedPaths) {
     if (localPaths.has(path)) continue;
+
+    // Its Drive copy is the one being renamed, and its index entry travels with
+    // it. Falling through would plan a delete of the file we just moved.
+    if (moved.has(path)) continue;
 
     const typedPath = vaultPath(path);
 

@@ -274,6 +274,166 @@ describe('planPush', () => {
     });
   });
 
+  describe('moves', () => {
+    it('renames on Drive instead of re-uploading a file that moved', () => {
+      const state = index({ 'popka/big.bin': entry('big', 'md5-big', 'id-big') });
+      const plan = planPush(
+        [local('jopka/big.bin', 'big')],
+        state,
+        [remote('popka/big.bin', 'md5-big', 'id-big')],
+        PLAIN,
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'move-remote', path: 'jopka/big.bin', from: 'popka/big.bin', fileId: 'id-big' },
+      ]);
+      // The old path must not also be planned for deletion, and must not be
+      // forgotten: its entry travels to the new path.
+      expect(plan.forget).toEqual([]);
+    });
+
+    it('mirrors nothing when a move is what happened, even with mirroring on', () => {
+      const state = index({ 'popka/big.bin': entry('big', 'md5-big', 'id-big') });
+      const plan = planPush(
+        [local('jopka/big.bin', 'big')],
+        state,
+        [remote('popka/big.bin', 'md5-big', 'id-big')],
+        { ...PLAIN, mirrorDeletions: true },
+      );
+
+      expect(plan.actions.map((action) => action.type)).toEqual(['move-remote']);
+    });
+
+    it('uploads a copy rather than moving the original away', () => {
+      const state = index({ 'popka/big.bin': entry('big', 'md5-big', 'id-big') });
+      const plan = planPush(
+        [local('popka/big.bin', 'big'), local('jopka/big.bin', 'big')],
+        state,
+        [remote('popka/big.bin', 'md5-big', 'id-big')],
+        PLAIN,
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'upload', path: 'jopka/big.bin', encrypt: false },
+        { type: 'skip', path: 'popka/big.bin', reason: 'unchanged' },
+      ]);
+    });
+
+    it('gives one Drive copy to one destination and uploads the rest', () => {
+      const state = index({ 'old.bin': entry('same', 'md5-s', 'id-s') });
+      const plan = planPush(
+        [local('a.bin', 'same'), local('b.bin', 'same')],
+        state,
+        [remote('old.bin', 'md5-s', 'id-s')],
+        PLAIN,
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'move-remote', path: 'a.bin', from: 'old.bin', fileId: 'id-s' },
+        { type: 'upload', path: 'b.bin', encrypt: false },
+      ]);
+    });
+
+    it('leaves a file another device rewrote to the conflict rules', () => {
+      const state = index({ 'old.bin': entry('big', 'md5-mine', 'id-big') });
+      const plan = planPush(
+        [local('new.bin', 'big')],
+        state,
+        [remote('old.bin', 'md5-theirs', 'id-big')],
+        PLAIN,
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'upload', path: 'new.bin', encrypt: false },
+        { type: 'skip', path: 'old.bin', reason: 'deleted-locally' },
+      ]);
+    });
+
+    it('uploads rather than renaming when the destination wants encryption', () => {
+      const state = index({ 'plain/note.md': entry('text', 'md5-t', 'id-t') });
+      const plan = planPush(
+        [local('secret/note.md', 'text')],
+        state,
+        [remote('plain/note.md', 'md5-t', 'id-t')],
+        { ...PLAIN, encryptionEnabled: true, encryptedPrefixes: ['secret/'] },
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'upload', path: 'secret/note.md', encrypt: true },
+        { type: 'skip', path: 'plain/note.md', reason: 'deleted-locally' },
+      ]);
+    });
+
+    it('renames an encrypted file that moved within the encrypted zone', () => {
+      const state = index({ 'secret/a.md': entry('text', 'md5-t', 'id-t') });
+      const sealed = { ...remote('secret/a.md', 'md5-t', 'id-t'), encryptedFlag: true };
+      const plan = planPush([local('secret/b.md', 'text')], state, [sealed], {
+        ...PLAIN,
+        encryptionEnabled: true,
+        encryptedPrefixes: ['secret/'],
+      });
+
+      expect(plan.actions).toEqual([
+        { type: 'move-remote', path: 'secret/b.md', from: 'secret/a.md', fileId: 'id-t' },
+      ]);
+    });
+
+    it('uploads when Drive says the stored bytes are not in the state the path wants', () => {
+      const state = index({ 'secret/a.md': entry('text', 'md5-t', 'id-t') });
+      // The rules say encrypted, the file on Drive is not. Renaming would leave
+      // a plaintext copy sitting under an encrypted path.
+      const plan = planPush(
+        [local('secret/b.md', 'text')],
+        state,
+        [remote('secret/a.md', 'md5-t', 'id-t')],
+        { ...PLAIN, encryptionEnabled: true, encryptedPrefixes: ['secret/'] },
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'upload', path: 'secret/b.md', encrypt: true },
+        { type: 'skip', path: 'secret/a.md', reason: 'deleted-locally' },
+      ]);
+    });
+
+    it('does not move a file out of an excluded folder', () => {
+      const state = index({ 'bin/tool.exe': entry('t', 'md5-t', 'id-t') });
+      const plan = planPush(
+        [local('kept/tool.exe', 't')],
+        state,
+        [remote('bin/tool.exe', 'md5-t', 'id-t')],
+        excluding('bin/'),
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'upload', path: 'kept/tool.exe', encrypt: false },
+        { type: 'skip', path: 'bin/tool.exe', reason: 'excluded' },
+      ]);
+    });
+
+    it('uploads when Drive has no copy of the vanished path to rename', () => {
+      const state = index({ 'old.bin': entry('big', 'md5-big', 'id-big') });
+      const plan = planPush([local('new.bin', 'big')], state, [], PLAIN);
+
+      expect(plan.actions).toEqual([{ type: 'upload', path: 'new.bin', encrypt: false }]);
+      expect(plan.forget).toEqual(['old.bin']);
+    });
+
+    it('uploads a moved file whose contents also changed', () => {
+      const state = index({ 'old.bin': entry('before', 'md5-b', 'id-b') });
+      const plan = planPush(
+        [local('new.bin', 'after')],
+        state,
+        [remote('old.bin', 'md5-b', 'id-b')],
+        PLAIN,
+      );
+
+      expect(plan.actions).toEqual([
+        { type: 'upload', path: 'new.bin', encrypt: false },
+        { type: 'skip', path: 'old.bin', reason: 'deleted-locally' },
+      ]);
+    });
+  });
+
   it('orders actions by path so plans are reproducible', () => {
     const plan = planPush([local('c.md'), local('a.md'), local('b.md')], index({}), [], PLAIN);
     expect(plan.actions.map((action) => action.path)).toEqual(['a.md', 'b.md', 'c.md']);

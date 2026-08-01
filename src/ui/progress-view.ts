@@ -5,7 +5,7 @@ import { formatBytes } from '../core/bytes';
 import type { BackupEstimate } from '../ops/estimate';
 import type { Result } from '../types';
 import type { ProgressHub, ProgressSnapshot } from './progress';
-import { percentOf, renderBytes, renderSummary } from './progress';
+import { percentOf, renderBytes, renderRate, renderSummary } from './progress';
 
 /**
  * The progress panel.
@@ -58,6 +58,9 @@ function describeEstimate(estimate: BackupEstimate): string {
           ` (${String(push.uploads)} new, ${String(push.updates)} changed)`,
   );
 
+  if (push.moves > 0) {
+    lines.push(`${String(push.moves)} moved in the vault — renamed on Drive, nothing to send.`);
+  }
   if (push.conflicts > 0) {
     lines.push(`${String(push.conflicts)} changed on another device and would be skipped.`);
   }
@@ -109,6 +112,7 @@ interface Parts {
   readonly overallCount: HTMLElement;
   readonly overallFill: HTMLElement;
   readonly overallBytes: HTMLElement;
+  readonly rate: HTMLElement;
   readonly fileName: HTMLElement;
   readonly fileTrack: HTMLElement;
   readonly fileFill: HTMLElement;
@@ -254,6 +258,7 @@ export class GeodeProgressView extends ItemView {
 
     const overall = createBar(progress);
     const overallBytes = createCaption(progress);
+    const rate = createCaption(progress);
 
     const fileName = progress.createDiv();
     fileName.style.marginTop = '14px';
@@ -293,6 +298,7 @@ export class GeodeProgressView extends ItemView {
       overallCount,
       overallFill: overall.fill,
       overallBytes,
+      rate,
       fileName,
       fileTrack: file.track,
       fileFill: file.fill,
@@ -373,6 +379,7 @@ export class GeodeProgressView extends ItemView {
         : '',
     );
 
+    parts.rate.setText(renderRate(snapshot, Date.now()));
     parts.fileName.setText(shorten(snapshot.detail));
 
     const file = snapshot.file;

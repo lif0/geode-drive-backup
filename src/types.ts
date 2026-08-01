@@ -287,6 +287,19 @@ export type PushAction =
       readonly encrypt: boolean;
     }
   | { readonly type: 'delete-remote'; readonly path: VaultPath; readonly fileId: DriveFileId }
+  /**
+   * The same bytes, under a new name. A file the vault moved or renamed is one
+   * metadata request on Drive rather than an upload and a delete, which for a
+   * large attachment is the difference between a moment and a morning.
+   */
+  | {
+      readonly type: 'move-remote';
+      /** Where the file is now. */
+      readonly path: VaultPath;
+      /** Where it was. Its index entry moves to `path`. */
+      readonly from: VaultPath;
+      readonly fileId: DriveFileId;
+    }
   | { readonly type: 'conflict'; readonly path: VaultPath; readonly fileId: DriveFileId | null }
   | { readonly type: 'skip'; readonly path: VaultPath; readonly reason: SkipReason };
 
@@ -334,6 +347,8 @@ export interface OperationSummary {
   readonly uploaded: number;
   readonly updated: number;
   readonly downloaded: number;
+  /** Push only: files renamed on Drive to follow a move in the vault. */
+  readonly moved: number;
   readonly renamed: number;
   readonly deleted: number;
   readonly skipped: number;

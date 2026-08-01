@@ -29,6 +29,8 @@ export interface PushEstimate {
   readonly updates: number;
   /** Bytes those two would send, measured as plaintext. */
   readonly bytes: number;
+  /** Files that moved in the vault. Renamed on Drive, so they send nothing. */
+  readonly moves: number;
   /** Files another device rewrote. A push reports these and moves on. */
   readonly conflicts: number;
   readonly unchanged: number;
@@ -79,6 +81,7 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
     uploads: 0,
     updates: 0,
     bytes: 0,
+    moves: 0,
     conflicts: 0,
     unchanged: 0,
     excluded: collected.value.excluded,
@@ -94,6 +97,12 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
       case 'update':
         counters.updates += 1;
         counters.bytes += sizeOf.get(action.path) ?? 0;
+        break;
+      // Deliberately adds nothing to `bytes`: a move is a metadata request, and
+      // counting the file's size here would put a 2 GB attachment in front of
+      // the user as an upload that is not going to happen.
+      case 'move-remote':
+        counters.moves += 1;
         break;
       case 'conflict':
         counters.conflicts += 1;

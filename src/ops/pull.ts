@@ -231,6 +231,7 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
     uploaded: 0,
     updated: 0,
     downloaded,
+    moved: 0,
     renamed,
     deleted: 0,
     skipped,

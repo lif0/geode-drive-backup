@@ -93,6 +93,7 @@ const GITIGNORE_PATH = '.gitignore';
 interface Counters {
   uploaded: number;
   updated: number;
+  moved: number;
   deleted: number;
   skipped: number;
 }
@@ -102,7 +103,7 @@ function properties(encrypted: boolean): GeodeAppProperties {
 }
 
 /** `mtime` if it is old enough to be evidence, else `-1`: "always re-read". */
-function cacheableMtime(mtime: number, now: number): number {
+export function cacheableMtime(mtime: number, now: number): number {
   return now - mtime >= MTIME_SETTLED_MS ? mtime : -1;
 }
 
@@ -287,7 +288,7 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
   const localByPath = new Map<string, LocalFile>(localFiles.map((f) => [f.path, f]));
   const remoteByPath = new Map<string, RemoteFile>(listing.value.files.map((f) => [f.path, f]));
 
-  const counters: Counters = { uploaded: 0, updated: 0, deleted: 0, skipped: 0 };
+  const counters: Counters = { uploaded: 0, updated: 0, moved: 0, deleted: 0, skipped: 0 };
   const conflicts: VaultPath[] = [];
   const failures: { path: VaultPath; message: string }[] = [];
   const warnings = listingWarnings(listing.value);
@@ -363,6 +364,7 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
     uploaded: counters.uploaded,
     updated: counters.updated,
     downloaded: 0,
+    moved: counters.moved,
     renamed: 0,
     deleted: counters.deleted,
     skipped: counters.skipped,
@@ -382,6 +384,29 @@ interface ActionContext {
   readonly conflicts: VaultPath[];
 }
 
+/**
+ * Re-records the timestamp and size of a file that was read, hashed, and found
+ * to be the one already on Drive.
+ *
+ * Without this the index keeps the stat of the last upload forever, and a file
+ * that was merely touched — or edited and then put back the way it was — never
+ * matches it again. Nothing sends it, so nothing corrects it: it is re-read and
+ * re-hashed on every push for the life of the vault, and the explorer shows it
+ * as pending for just as long. It also repairs an entry stamped `-1` by
+ * `cacheableMtime`, which is the same trap by a shorter route.
+ *
+ * Only the stat is touched. sha256, the file id and the remote md5 are the
+ * claims about Drive, and this makes no new claim about Drive.
+ */
+function refreshStat(deps: PushDeps, path: VaultPath, context: ActionContext): void {
+  const file = context.localByPath.get(path);
+  const entry = deps.index.get(path);
+  if (file === undefined || entry === undefined) return;
+  if (entry.mtime === file.mtime && entry.size === file.size) return;
+
+  deps.index.set(path, { ...entry, mtime: file.mtime, size: file.size });
+}
+
 async function applyAction(
   deps: PushDeps,
   action: PushAction,
@@ -389,12 +414,44 @@ async function applyAction(
 ): Promise<Result<void>> {
   switch (action.type) {
     case 'skip': {
+      // Only the two reasons that mean "the local bytes still hash to what we
+      // pushed". The others are about a file that is absent or excluded, and
+      // there is no fresh stat to record for those.
+      if (action.reason === 'unchanged' || action.reason === 'remote-changed-locally-unchanged') {
+        refreshStat(deps, action.path, context);
+      }
       context.counters.skipped += 1;
       return ok(undefined);
     }
 
     case 'conflict': {
       context.conflicts.push(action.path);
+      return ok(undefined);
+    }
+
+    case 'move-remote': {
+      // Both are read before the rename, not after: renaming and then finding
+      // nothing to record would leave the Drive copy under a name the index has
+      // never heard of, which the next push would call a conflict.
+      const entry = deps.index.get(action.from);
+      const file = context.localByPath.get(action.path);
+      if (entry === undefined || file === undefined) return ok(undefined);
+
+      const renamed = await deps.drive.renameFile(action.fileId, encodePath(action.path));
+      if (!renamed.ok) return renamed;
+
+      // The entry moves whole. Same bytes, same file id, and the same md5 —
+      // a rename does not touch content, so what Drive holds is unchanged and
+      // the hash recorded for it is still the right one.
+      deps.index.remove(action.from);
+      deps.index.set(action.path, {
+        sha256: file.sha256,
+        driveFileId: action.fileId,
+        remoteMd5: renamed.value.md5Checksum ?? entry.remoteMd5,
+        mtime: file.mtime,
+        size: file.size,
+      });
+      context.counters.moved += 1;
       return ok(undefined);
     }
 

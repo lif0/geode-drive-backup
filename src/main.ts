@@ -2,7 +2,7 @@ import { Notice, Plugin, normalizePath } from 'obsidian';
 
 import type { BackupState } from './core/backup-state';
 import { rollUpFolders } from './core/backup-state';
-import { toArrayBuffer } from './core/bytes';
+import { hashBytes, toArrayBuffer } from './core/bytes';
 import type { IgnoreRules } from './core/ignore';
 import { NO_IGNORE_RULES, isIgnored } from './core/ignore';
 import { KeyCache } from './core/kdf';
@@ -15,7 +15,7 @@ import { estimateBackup, previewExclusions } from './ops/estimate';
 import { IndexStore } from './ops/index-store';
 import { runPull } from './ops/pull';
 import type { PushDeps } from './ops/push';
-import { loadIgnoreRules, runPush } from './ops/push';
+import { cacheableMtime, loadIgnoreRules, runPush } from './ops/push';
 import type { AuthFlowKind, GeodeSettings, StoredIndexEntry } from './settings';
 import { defaultSettings, migrateSettings } from './settings';
 import type { CancellationToken, CryptoProvider, OperationSummary, Result, VaultIo } from './types';
@@ -28,6 +28,26 @@ import { ProgressHub, statusBarText } from './ui/progress';
 import type { SettingsHost } from './ui/settings-tab';
 import { GeodeSettingTab } from './ui/settings-tab';
 import { GEODE_VIEW_TYPE, GeodeProgressView } from './ui/progress-view';
+
+/** How long a burst of settings saves has to stop before the dots are redrawn. */
+const BADGE_RELOAD_DELAY_MS = 500;
+
+/**
+ * How long editing has to stop before an edited file is checked against the index.
+ *
+ * Longer than the two seconds a timestamp needs to settle, so the check reads a
+ * file whose mtime can be trusted afterwards. See `cacheableMtime`.
+ */
+const BADGE_VERIFY_DELAY_MS = 2500;
+
+/**
+ * The largest file re-read to answer a dot.
+ *
+ * The check is worth a note, or a small attachment. It is not worth hashing a
+ * video every time something touches it, and a file that big is one a push can
+ * take its time over.
+ */
+const BADGE_VERIFY_MAX_BYTES = 8 * 1024 * 1024;
 
 /** Geode: back the vault up to Google Drive, and get it back on a new device. */
 export default class GeodePlugin extends Plugin implements SettingsHost {
@@ -66,6 +86,11 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
    */
   private ignoreRules: IgnoreRules = NO_IGNORE_RULES;
   private badges: FileExplorerBadges | null = null;
+  private badgeReloadTimer: number | null = null;
+
+  /** Edited files waiting to be compared against the index. See `verifyPending`. */
+  private readonly pendingVerify = new Set<string>();
+  private verifyTimer: number | null = null;
 
   override async onload(): Promise<void> {
     this.settings = migrateSettings(await this.loadData());
@@ -140,13 +165,26 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
     this.registerEvent(this.app.vault.on('create', repaint));
     this.registerEvent(this.app.vault.on('delete', repaint));
     this.registerEvent(this.app.vault.on('rename', repaint));
-    this.registerEvent(this.app.vault.on('modify', repaint));
+    this.registerEvent(
+      this.app.vault.on('modify', (file) => {
+        repaint();
+        // An edit turns the dot orange at once, on the timestamp alone. Undoing
+        // that edit does not turn it back, because the timestamp moved again —
+        // so the file is queued to be looked at properly once typing stops.
+        this.scheduleVerify(file.path);
+      }),
+    );
     this.registerEvent(this.app.workspace.on('layout-change', repaint));
   }
 
   /** Drops the derived key. Obsidian calls this on disable, reload and quit. */
   override onunload(): void {
     this.keys.clear();
+    if (this.badgeReloadTimer !== null) window.clearTimeout(this.badgeReloadTimer);
+    this.badgeReloadTimer = null;
+    if (this.verifyTimer !== null) window.clearTimeout(this.verifyTimer);
+    this.verifyTimer = null;
+    this.pendingVerify.clear();
     this.badges?.stop();
     this.badges = null;
   }
@@ -198,6 +236,87 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
     }
 
     return rollUpFolders(files);
+  }
+
+  /** Queues an edited file, and rearms the timer. Bursts of edits cost one pass. */
+  private scheduleVerify(path?: string): void {
+    if (!this.settings.showFileBadges) return;
+    if (path !== undefined) this.pendingVerify.add(path);
+    if (this.pendingVerify.size === 0) return;
+
+    if (this.verifyTimer !== null) window.clearTimeout(this.verifyTimer);
+    this.verifyTimer = window.setTimeout(() => {
+      this.verifyTimer = null;
+      void this.verifyPending();
+    }, BADGE_VERIFY_DELAY_MS);
+  }
+
+  /**
+   * Decides, for files that were edited, whether they still match the backup.
+   *
+   * `backupStates` answers on the timestamp alone because it runs on every
+   * repaint. That is right for the common case and wrong for one: a file edited
+   * and then put back the way it was has a new timestamp and the old contents,
+   * and no amount of looking at stats will ever say so. Hashing it does, and
+   * hashing one file after typing stops is affordable where hashing the vault on
+   * every repaint is not.
+   *
+   * A file whose length changed is answered without being opened: a backup that
+   * matched byte for byte cannot have gained or lost bytes and still match.
+   *
+   * Writes the fresh stat into the index when the hash agrees, so the next push
+   * skips reading the file as well — the dot and the push take the same shortcut
+   * and now agree about it.
+   */
+  private async verifyPending(): Promise<void> {
+    const paths = [...this.pendingVerify];
+    this.pendingVerify.clear();
+
+    // A run reads and hashes these files anyway, and records the result. Doing
+    // it here as well would race it for the index and win nothing.
+    if (this.busy) return;
+
+    const io = this.createVaultIo();
+    let repaired = false;
+
+    for (const raw of paths) {
+      const file = this.app.vault.getFileByPath(raw);
+      if (file === null) continue;
+
+      const path = vaultPath(raw);
+      const entry = this.index.get(path);
+      if (entry === undefined) continue;
+      if (entry.mtime === file.stat.mtime && entry.size === file.stat.size) continue;
+      if (entry.size !== file.stat.size) continue;
+      if (file.stat.size > BADGE_VERIFY_MAX_BYTES) continue;
+      if (isIgnored(this.ignoreRules, path)) continue;
+
+      // The file is still being written to, by this or by another program.
+      // Re-queued rather than trusted: a hash filed under a timestamp that has
+      // not settled is the one thing that could hide a real edit.
+      const mtime = cacheableMtime(file.stat.mtime, Date.now());
+      if (mtime < 0) {
+        this.pendingVerify.add(raw);
+        continue;
+      }
+
+      try {
+        const bytes = await io.readBinary(path);
+        if ((await hashBytes(this.crypto, bytes)) !== entry.sha256) continue;
+      } catch {
+        // Unreadable right now. The dot stays orange, which is the safe answer.
+        continue;
+      }
+
+      this.index.set(path, { ...entry, mtime, size: file.stat.size });
+      repaired = true;
+    }
+
+    if (repaired) {
+      await this.index.save();
+      this.badges?.schedule();
+    }
+    this.scheduleVerify();
   }
 
   /* -------------------------- progress surfaces --------------------------- */
@@ -399,16 +518,20 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
 
   private async persistIndex(stored: Record<string, StoredIndexEntry>): Promise<void> {
     this.settings.index = stored;
-    await this.saveSettings();
+    // Straight to disk, deliberately not through saveSettings. This runs every
+    // 25 files, and saveSettings reloads .gitignore and rescans the vault to
+    // repaint the explorer dots — thirty times over a push, for rules that
+    // cannot have changed since it started.
+    await this.saveData(this.settings);
   }
 
   /* ---------------------------- SettingsHost ------------------------------ */
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
-    // Cheap, and the alternative is dots that describe the settings as they
-    // were when Obsidian started.
-    await this.refreshBadges();
+    // Debounced: this fires on every keystroke in a settings text area, and the
+    // reload behind it reads a file and walks the whole vault.
+    this.scheduleBadgeReload();
   }
 
   async connectAccount(): Promise<void> {
@@ -487,14 +610,20 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
   }
 
   /**
-   * Re-reads the exclusion rules and repaints the dots.
+   * Re-reads the exclusion rules and repaints the dots, once things settle.
    *
-   * Called after anything that can change what belongs in the backup: a saved
-   * setting, a finished run. The rules live in a file and in settings, and
-   * neither announces itself.
+   * The rules live in a file and in settings, and neither announces itself, so
+   * a save is the only signal. Debounced because saves come in bursts, and
+   * skipped while a run is going: the rules are fixed for the length of a run,
+   * and the run has better uses for the main thread.
    */
-  async refreshBadges(): Promise<void> {
-    await this.startBadges();
-    this.badges?.refresh();
+  private scheduleBadgeReload(): void {
+    if (this.badgeReloadTimer !== null) window.clearTimeout(this.badgeReloadTimer);
+
+    this.badgeReloadTimer = window.setTimeout(() => {
+      this.badgeReloadTimer = null;
+      if (this.busy) return;
+      void this.startBadges();
+    }, BADGE_RELOAD_DELAY_MS);
   }
 }

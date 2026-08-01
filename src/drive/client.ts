@@ -90,12 +90,29 @@ const MULTIPART_MAX_BYTES = 5 * 1024 * 1024;
  * pieces is what turns a frozen bar into a moving one — and it lets Cancel take
  * effect inside a single large file instead of only between files.
  *
- * Drive requires every resumable chunk but the last to be a multiple of 256 KB.
- * Downloads have no such rule and take a larger bite, since a `Range` request
- * costs a round trip and buys less: a download that stalls is obvious anyway.
+ * The size is a straight trade against speed, and the first attempt at this got
+ * it wrong. Every chunk is a whole request that Drive acknowledges before the
+ * next one starts, so a fixed 1 MB piece turned a 3 GB push into three thousand
+ * round trips — minutes of latency bought nothing but a smoother bar. Google
+ * asks for at least 8 MB for throughput, and for a multiple of 256 KB.
+ *
+ * So: aim for a fixed number of updates per file rather than a fixed size. A
+ * 20 MB attachment moves in one piece, a 2 GB one in twenty, and the bar is
+ * about as smooth either way.
  */
-const UPLOAD_CHUNK_BYTES = 1024 * 1024;
-const DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
+const CHUNK_ALIGNMENT = 256 * 1024;
+const MIN_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+const MAX_UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
+const TARGET_CHUNKS_PER_FILE = 20;
+
+/** Downloads have no alignment rule, only the same round-trip arithmetic. */
+const DOWNLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
+
+/** Chunk size for one file: about twenty pieces, clamped and 256 KB-aligned. */
+export function uploadChunkSize(totalBytes: number): number {
+  const even = Math.ceil(totalBytes / TARGET_CHUNKS_PER_FILE / CHUNK_ALIGNMENT) * CHUNK_ALIGNMENT;
+  return Math.min(Math.max(even, MIN_UPLOAD_CHUNK_BYTES), MAX_UPLOAD_CHUNK_BYTES);
+}
 
 /** Below this, one request is both faster and honest. Nothing to report. */
 const CHUNK_THRESHOLD_BYTES = MULTIPART_MAX_BYTES;
@@ -671,13 +688,15 @@ export class DriveClient {
       return err(networkError(`${what} failed: Drive did not open an upload session.`));
     }
 
+    const chunkBytes = uploadChunkSize(content.length);
+
     let offset = 0;
     while (offset < content.length) {
       if (this.cancellation?.isCancelled() === true) {
         return err(cancelledError(`${what} stopped.`));
       }
 
-      const end = Math.min(offset + UPLOAD_CHUNK_BYTES, content.length);
+      const end = Math.min(offset + chunkBytes, content.length);
       const sent = await this.send({
         url: session,
         method: 'PUT',
@@ -783,6 +802,25 @@ export class DriveClient {
     );
     if (updated.ok) onProgress?.(content.length);
     return updated;
+  }
+
+  /**
+   * Renames a file, which is how a move inside the vault is followed.
+   *
+   * The Drive folder is flat and the vault path lives in the file's name, so
+   * moving a note between folders is this one metadata request — no bytes, no
+   * new file id, and the same md5 on the other side.
+   */
+  async renameFile(fileId: DriveFileId, name: DriveName): Promise<Result<DriveFileDto>> {
+    return this.sendForFile(
+      {
+        url: buildUrl(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`, { fields: FILE_FIELDS }),
+        method: 'PATCH',
+        contentType: 'application/json',
+        body: JSON.stringify({ name }),
+      },
+      `Renaming ${name}`,
+    );
   }
 
   /** Rewrites a file's appProperties. Only called when the encryption flag flips. */

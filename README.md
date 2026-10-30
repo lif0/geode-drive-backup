@@ -327,8 +327,8 @@ changed nothing on disk.
 
 ### Limitations you should know about
 
-- **File names are not encrypted.** Paths are base64url-encoded so Drive accepts them, which is
-  encoding, not encryption. Anyone with access to the folder can list every path in your vault.
+- **File names and the replacement dictionary are not encrypted.** Paths are tokenized and
+  base64url-encoded, not encrypted. Anyone with access to the backup can recover its paths.
 - **File sizes are not hidden.** A container is the plaintext length plus 49 bytes.
 - **There is no recovery.** Forget the passphrase and the encrypted files are gone — for you and
   for everyone else.
@@ -343,12 +343,16 @@ changed nothing on disk.
 build step. Copy that one file next to a downloaded Drive folder and you can get your notes back
 with nothing but Node and your passphrase.
 
+Download the whole backup root, including `__geode_dictionary.json` and `objects/`. Without the dictionary, tokenized
+paths cannot be restored. `--dir` requires a new or empty output directory and validates all
+names before writing; duplicate paths and unknown tokens are errors.
+
 ```bash
 # One file to stdout
-node tools/decrypt.mjs 5rWL6K-VLm1k
+node tools/decrypt.mjs objects/bm90ZS5tZA
 
 # One file to disk
-node tools/decrypt.mjs 5rWL6K-VLm1k -o note.md
+node tools/decrypt.mjs objects/bm90ZS5tZA -o note.md
 
 # Rebuild a whole vault from a downloaded Drive folder:
 # decodes the names, decrypts what is encrypted, copies the rest through
@@ -436,19 +440,43 @@ Consequences worth knowing:
 
 ### Storage layout in Drive
 
-Flat. One folder, one Drive file per vault file, no mirrored hierarchy:
+Service files live in the backup root; vault files live in its flat `objects/` subfolder:
 
 ```
 Geode/
-  bm90ZS5tZA                    ← base64url("note.md")
-  Sm91cm5hbC8yMDI2LTA4LTAxLm1k  ← base64url("Journal/2026-08-01.md")
+  __geode_dictionary.json
+  __geode_dictionary.previous.json  ← previous dictionary, after its first update
   __keycheck
+  objects/
+    bm90ZS5tZA                     ← base64url("note.md")
+    <base64url of tokenized path>
 ```
 
-The path lives in the file name because Drive's `appProperties` cap at roughly 124 bytes per
-key/value pair, which any non-ASCII path overflows. `appProperties` carries only `{ v, enc }`.
+In **Settings → File name replacements**, add literal fragments such as `Data Structures`
+and `algocode.io`. Each gets a permanent numeric ID. A path is scanned left to right, replacing
+the longest enabled match with `{ID}`. Literal `{` and `}` become `{{` and `}}`; expansions are
+never decoded recursively. Matching is case-sensitive and paths/rules use Unicode NFC.
 
-Every upload names that folder as its parent, so nothing GeodeDrive writes can land anywhere else — and
+Rules cannot be edited or removed. Disable a rule to stop using it for new names; it remains
+available to decode old names. Adding a rule does not rename or re-upload existing files.
+Moving an unchanged file still only renames its Drive copy. Files are compared by their decoded
+paths, so different encodings of the same path do not cause another upload.
+
+Push reads and reconciles the dictionary first. All planned new names must round-trip and fit
+the 240-character ASCII budget before any backup mutation. If one is too long, add a replacement
+rule and retry. This bounds the file-name component, not the entire download destination path.
+Updated dictionaries are published **before** files use new IDs; the previous dictionary is saved
+first. Missing, malformed, conflicting or duplicate dictionaries stop the operation. A previous
+dictionary may lack recent IDs: restore the latest valid dictionary, including a local copy from
+plugin settings when necessary, rather than blindly rolling back. The dictionary contains no
+plaintext content hashes or credentials. `appProperties` carries only `{ v, enc }`.
+
+**One writing device is supported. Concurrent dictionary updates are not coordinated.**
+This layout has no migration from flat backups: choose a new empty Drive folder.
+Names are plain base64url without a prefix; the format version is stored in the dictionary.
+Pull and estimates never create objects/. If an existing backup loses this directory, operations stop.
+
+Every data upload names `objects/` as its parent, so nothing GeodeDrive writes can land anywhere else — and
 `drive.file` means it cannot even see the rest of your Drive.
 
 The folder is created in the root of My Drive, and the plugin offers no way to choose somewhere

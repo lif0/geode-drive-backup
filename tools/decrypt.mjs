@@ -25,10 +25,11 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { createInterface } from 'node:readline';
 
@@ -237,18 +238,26 @@ function readDictionary(folder) {
   return rules;
 }
 
-/** Reject existing symlink ancestors before creating restoration directories.
+/** Resolve ancestor aliases (such as /var on macOS), but reject a symlink at
+ * the output directory itself, including dangling links. Do not create missing
+ * directories until the backup's paths have been validated.
  * @param {string} target
  */
-function checkAncestors(target) {
+function resolveOutputDirectory(target) {
   let current = resolve(target);
-  for (;;) {
-    if (existsSync(current) && lstatSync(current).isSymbolicLink())
-      throw new Error(`Symlink in output path: ${current}`);
-    const parent = dirname(current);
-    if (parent === current) return;
-    current = parent;
+  let info = lstatSync(current, { throwIfNoEntry: false });
+  if (info?.isSymbolicLink()) throw new Error(`Symlink in output path: ${current}`);
+
+  const missing = [];
+  while (info === undefined) {
+    missing.push(basename(current));
+    current = dirname(current);
+    info = lstatSync(current, { throwIfNoEntry: false });
   }
+  const existing = realpathSync(current);
+  if (!statSync(existing).isDirectory())
+    throw new Error(`Not a directory in output path: ${current}`);
+  return join(existing, ...missing.reverse());
 }
 
 /* -------------------------------- input ---------------------------------- */
@@ -395,8 +404,8 @@ async function decryptDirectory(inputDir, outputDir, flags) {
   ) {
     throw new Error('Flat or mixed backup layout: encoded files must be in objects/.');
   }
-  checkAncestors(outputDir);
-  if (existsSync(outputDir) && readdirSync(outputDir).length > 0) {
+  const outputRoot = resolveOutputDirectory(outputDir);
+  if (existsSync(outputRoot) && readdirSync(outputRoot).length > 0) {
     throw new Error('Restore into a new or empty output directory to avoid overwriting files.');
   }
   const entries = readdirSync(objectsDir).filter((name) =>
@@ -443,7 +452,7 @@ async function decryptDirectory(inputDir, outputDir, flags) {
     }
 
     const bytes = new Uint8Array(readFileSync(join(objectsDir, name)));
-    const target = join(resolve(outputDir), path);
+    const target = join(outputRoot, path);
     mkdirSync(dirname(target), { recursive: true });
 
     if (isContainer(bytes)) {

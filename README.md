@@ -36,11 +36,15 @@ Works on desktop and on phones — no Node APIs, no `fetch`, no runtime dependen
 
 ### From source
 
+Use Node 24 (the version selected by `.nvmrc` and CI) and Make. Node 22.13+ and 26.x
+are also supported; Node 23 is not supported by the development dependencies.
+If you use nvm, run `nvm install` and `nvm use` from the project directory first.
+
 ```bash
 git clone https://github.com/lif0/geode-drive-backup.git
 cd geode-drive-backup
-npm install
-npm run build          # typecheck + lint + test + bundle
+make install           # install the versions in package-lock.json
+make build             # typecheck + lint + test + bundle
 ```
 
 Copy `main.js` and `manifest.json` into your vault's plugin folder, or symlink the repo there and
@@ -512,6 +516,13 @@ fallback lookup searches by name with no parent constraint and finds it wherever
 ---
 
 ## Development
+
+Run `make update` to update dependencies within the ranges in `package.json`, then build,
+run the tests and recovery vectors, and audit the resulting dependency tree. Both the
+updated lockfile and any audit failures remain available for review. Major upgrades require
+an explicit change to `package.json`; this command does not run `npm audit fix --force`.
+Use `make install` on another machine to reproduce the lockfile, or `make check` to run all
+checks without updating dependencies. `make help` lists the available commands.
 
 ```bash
 npm run dev             # esbuild watch

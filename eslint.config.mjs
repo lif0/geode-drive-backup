@@ -7,7 +7,6 @@ import eslintConfigPrettier from 'eslint-config-prettier';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
-// import.meta.dirname needs Node 20.11; this repo still builds on Node 18.
 const rootDir = dirname(fileURLToPath(import.meta.url));
 
 // Exists in Node, missing on a phone.

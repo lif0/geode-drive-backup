@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -27,7 +35,7 @@ function fixture() {
   mkdirSync(input);
   mkdirSync(join(input, 'objects'));
   writeFileSync(join(input, DICTIONARY_NAME), serializeDictionary(dictionary));
-  return { input, output };
+  return { root, input, output };
 }
 
 afterEach(() => {
@@ -80,17 +88,79 @@ describe('standalone dictionary recovery', () => {
     expect(result.stderr).toContain('Missing __geode_dictionary.json');
   });
 
-  it.each(['{99}.md', '../outside.md', 'C:/outside.md', '{1', 'a//b.md'])(
-    'rejects invalid decoded path %s',
-    (path) => {
-      const { input, output } = fixture();
-      writeFileSync(join(input, 'objects', Buffer.from(path).toString('base64url')), 'content');
-      const result = spawnSync(process.execPath, [tool, '--dir', input, '--out', output], {
-        encoding: 'utf8',
-      });
-      expect(result.status).not.toBe(0);
+  it.each(['new', 'existing', 'nested'])(
+    'restores beneath a symlinked ancestor (%s output directory)',
+    (kind) => {
+      const { root, input } = fixture();
+      const physical = join(root, 'physical');
+      const alias = join(root, 'alias');
+      mkdirSync(physical);
+      symlinkSync(physical, alias, 'dir');
+      const suffix = kind === 'nested' ? 'missing/parents/restored' : 'restored';
+      const output = join(alias, suffix);
+      if (kind === 'existing') mkdirSync(output);
+      const path = 'Data Structures/note.md';
+      writeFileSync(join(input, 'objects', encodePath(vaultPath(path), dictionary)), 'remote');
+
+      execFileSync(process.execPath, [tool, '--dir', input, '--out', output], { stdio: 'pipe' });
+
+      expect(readFileSync(join(physical, suffix, path), 'utf8')).toBe('remote');
     },
   );
+
+  it.each(['existing', 'dangling'])('rejects a symlink as the output directory (%s)', (kind) => {
+    const { root, input, output } = fixture();
+    const outside = join(root, 'outside');
+    if (kind === 'existing') mkdirSync(outside);
+    symlinkSync(outside, output, 'dir');
+    writeFileSync(join(input, 'objects', encodePath(vaultPath('note.md'), dictionary)), 'remote');
+
+    const result = spawnSync(process.execPath, [tool, '--dir', input, '--out', output], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Symlink in output path');
+    expect(existsSync(join(outside, 'note.md'))).toBe(false);
+  });
+
+  it('refuses to restore through a symlink inside the output directory', () => {
+    const { root, input, output } = fixture();
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'note.md'), 'local');
+    mkdirSync(output);
+    symlinkSync(outside, join(output, 'linked'), 'dir');
+    writeFileSync(
+      join(input, 'objects', encodePath(vaultPath('linked/note.md'), dictionary)),
+      'remote',
+    );
+
+    const result = spawnSync(process.execPath, [tool, '--dir', input, '--out', output], {
+      encoding: 'utf8',
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('new or empty output directory');
+    expect(readFileSync(join(outside, 'note.md'), 'utf8')).toBe('local');
+  });
+
+  it.each([
+    ['{99}.md', 'Unknown dictionary token'],
+    ['../outside.md', 'Unsafe decoded path'],
+    ['C:/outside.md', 'Unsafe decoded path'],
+    ['{1', 'Malformed dictionary token'],
+    ['a//b.md', 'Unsafe decoded path'],
+  ])('rejects invalid decoded path %s', (path, error) => {
+    const { input, output } = fixture();
+    writeFileSync(join(input, 'objects', Buffer.from(path).toString('base64url')), 'content');
+    const result = spawnSync(process.execPath, [tool, '--dir', input, '--out', output], {
+      encoding: 'utf8',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(error);
+    expect(existsSync(output)).toBe(false);
+  });
 
   it('refuses to overwrite an existing local file', () => {
     const { input, output } = fixture();
@@ -113,5 +183,6 @@ describe('standalone dictionary recovery', () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('Duplicate');
+    expect(existsSync(output)).toBe(false);
   });
 });

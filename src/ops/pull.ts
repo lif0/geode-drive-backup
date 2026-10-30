@@ -21,6 +21,8 @@ import type {
 import { cancelledError, cryptoError, err, ok } from '../types';
 import { listingWarnings, resolveFolder } from './folder';
 import type { IndexStore } from './index-store';
+import type { PathDictionary } from '../core/path-dictionary';
+import { dictionaryFor } from './path-dictionary';
 
 /**
  * Pull: rebuild the vault from Drive.
@@ -32,6 +34,7 @@ import type { IndexStore } from './index-store';
 
 /** Everything pull needs from the outside. */
 export interface PullDeps {
+  readonly rememberDictionary: (dictionary: PathDictionary, folderId: DriveFileId) => Promise<void>;
   readonly vault: VaultIo;
   readonly drive: DriveClient;
   readonly crypto: CryptoProvider;
@@ -158,6 +161,10 @@ export async function runPull(deps: PullDeps): Promise<Result<OperationSummary>>
 
   const listing = await deps.drive.listFolder(folderId.value);
   if (!listing.ok) return listing;
+  const dictionary = dictionaryFor(deps.settings, folderId.value, listing.value);
+  if (!dictionary.ok) return dictionary;
+  if (listing.value.dictionary !== null)
+    await deps.rememberDictionary(dictionary.value, folderId.value);
 
   const unlocked = await unlockIfNeeded(deps, listing.value.keycheckId);
   if (!unlocked.ok) return unlocked;

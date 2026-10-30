@@ -459,6 +459,11 @@ export default class GeodePlugin extends Plugin implements SettingsHost {
         this.settings.folderId = id;
         await this.saveSettings();
       },
+      rememberDictionary: async (dictionary, folderId) => {
+        this.settings.pathDictionary = dictionary;
+        this.settings.dictionaryFolderId = folderId;
+        await this.saveData(this.settings);
+      },
     };
   }
 

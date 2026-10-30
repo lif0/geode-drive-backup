@@ -18,7 +18,7 @@ export type VaultPath = string & { readonly __brand: 'VaultPath' };
 /** Opaque Google Drive file id. */
 export type DriveFileId = string & { readonly __brand: 'DriveFileId' };
 
-/** A Drive file's `name` field: base64url of the utf-8 vault path. */
+/** A Drive file's `name`: base64url of the tokenized path. */
 export type DriveName = string & { readonly __brand: 'DriveName' };
 
 /** Lowercase hex SHA-256 digest, 64 characters. */
@@ -32,7 +32,8 @@ const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
  * and `..` segments so a hostile Drive file name cannot escape the vault on pull.
  */
 export function isValidVaultPath(raw: string): boolean {
-  if (raw.length === 0 || raw.startsWith('/') || raw.includes('\\')) return false;
+  if (raw.length === 0 || raw.startsWith('/') || /^[A-Za-z]:/.test(raw) || raw.includes('\\'))
+    return false;
   if (raw.includes('\0')) return false;
   return !raw.split('/').some((segment) => segment === '..' || segment === '.' || segment === '');
 }

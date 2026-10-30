@@ -19,7 +19,15 @@
  * Key: PBKDF2-SHA256, 600000 iterations, 32-byte key, salt taken from the header.
  */
 import { webcrypto } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { createInterface } from 'node:readline';
@@ -34,6 +42,8 @@ const NONCE_LENGTH = 12;
 const TAG_LENGTH = 16;
 const HEADER_LENGTH = MAGIC.length + 1 + SALT_LENGTH + NONCE_LENGTH;
 const KEYCHECK_NAME = '__keycheck';
+const DICTIONARY_NAME = '__geode_dictionary.json';
+const DICTIONARY_BACKUP_NAME = '__geode_dictionary.previous.json';
 
 /* ------------------------------- format ---------------------------------- */
 
@@ -130,16 +140,115 @@ async function openContainer(container, passphrase) {
 /* ------------------------------ vault names ------------------------------- */
 
 /**
- * Drive file names are base64url of the utf-8 vault path.
+ * Names carry base64url of a tokenized UTF-8 path. Keep this decoder aligned
+ * with src/core/path-dictionary.ts; CLI integration tests exercise both.
  * @param {string} name
+ * @param {Map<number, string>} dictionary
  */
-function decodeDriveName(name) {
-  if (!/^[A-Za-z0-9_-]+$/.test(name)) return null;
-  const text = Buffer.from(name, 'base64url').toString('utf8');
-  if (text.length === 0 || text.includes('�') || text.includes('\0')) return null;
-  if (text.startsWith('/') || text.includes('\\')) return null;
-  if (text.split('/').some((part) => part === '' || part === '.' || part === '..')) return null;
-  return text;
+function decodeDriveName(name, dictionary) {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Unsupported path name: ${name}`);
+  const encoded = name;
+  const raw = Buffer.from(encoded, 'base64url');
+  const text = raw.toString('utf8');
+  if (
+    raw.toString('base64url') !== encoded ||
+    Buffer.from(text, 'utf8').toString('base64url') !== encoded
+  ) {
+    throw new Error('Invalid base64url or UTF-8 path name.');
+  }
+  let expanded = '';
+  for (let offset = 0; offset < text.length;) {
+    const char = text.charAt(offset);
+    if (char !== '{' && char !== '}') {
+      expanded += char;
+      offset += 1;
+    } else if (text.charAt(offset + 1) === char) {
+      expanded += char;
+      offset += 2;
+    } else {
+      const token = /^\{([1-9][0-9]*)\}/.exec(text.slice(offset));
+      if (char !== '{' || token === null) throw new Error('Malformed dictionary token or brace.');
+      const replacement = dictionary.get(Number(token[1]));
+      if (replacement === undefined) throw new Error(`Unknown dictionary token ${token[0]}.`);
+      expanded += replacement;
+      offset += token[0].length;
+    }
+    if (expanded.length > 65536) throw new Error('Decoded path exceeds the safety limit.');
+  }
+  const path = expanded.normalize('NFC');
+  if (
+    path.length === 0 ||
+    path.includes('\0') ||
+    path.startsWith('/') ||
+    /^[A-Za-z]:/.test(path) ||
+    path.includes('\\') ||
+    path.split('/').some((part) => part === '' || part === '.' || part === '..')
+  ) {
+    throw new Error('Unsafe decoded path.');
+  }
+  return path;
+}
+
+/** @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** @param {string} folder */
+function readDictionary(folder) {
+  const file = join(folder, DICTIONARY_NAME);
+  if (!existsSync(file))
+    throw new Error(`Missing ${DICTIONARY_NAME}. Download it together with the backup.`);
+  if (lstatSync(file).isSymbolicLink() || statSync(file).size > 8 * 1024 * 1024)
+    throw new Error('Invalid dictionary file.');
+  const bytes = readFileSync(file);
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('Dictionary is not valid UTF-8.');
+  /** @type {unknown} */
+  const value = JSON.parse(text);
+  if (!isRecord(value) || value['version'] !== 1 || !Array.isArray(value['rules']))
+    throw new Error('Invalid or unsupported dictionary.');
+  const rules = new Map();
+  const texts = new Set();
+  for (const raw of value['rules']) {
+    if (!isRecord(raw)) throw new Error('Invalid dictionary rule.');
+    const id = raw['id'];
+    const text = raw['text'];
+    if (
+      typeof id !== 'number' ||
+      !Number.isSafeInteger(id) ||
+      id < 1 ||
+      typeof text !== 'string' ||
+      text.length === 0 ||
+      text.includes('\0') ||
+      text !== text.normalize('NFC') ||
+      Buffer.from(text, 'utf8').toString('utf8') !== text ||
+      typeof raw['enabled'] !== 'boolean' ||
+      rules.has(id) ||
+      texts.has(text)
+    ) {
+      throw new Error('Invalid or duplicate dictionary rule.');
+    }
+    rules.set(id, text);
+    texts.add(text);
+  }
+  return rules;
+}
+
+/** Reject existing symlink ancestors before creating restoration directories.
+ * @param {string} target
+ */
+function checkAncestors(target) {
+  let current = resolve(target);
+  for (;;) {
+    if (existsSync(current) && lstatSync(current).isSymbolicLink())
+      throw new Error(`Symlink in output path: ${current}`);
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
 }
 
 /* -------------------------------- input ---------------------------------- */
@@ -267,9 +376,55 @@ async function decryptOne(file, flags) {
  * @param {Record<string, string | boolean>} flags
  */
 async function decryptDirectory(inputDir, outputDir, flags) {
-  const entries = readdirSync(resolve(inputDir)).filter((name) =>
-    statSync(join(resolve(inputDir), name)).isFile(),
+  const dictionary = readDictionary(resolve(inputDir));
+  const objectsDir = join(resolve(inputDir), 'objects');
+  if (
+    !existsSync(objectsDir) ||
+    !lstatSync(objectsDir).isDirectory() ||
+    lstatSync(objectsDir).isSymbolicLink()
+  ) {
+    throw new Error('Missing or invalid objects directory. Download the whole backup folder.');
+  }
+  if (
+    readdirSync(resolve(inputDir)).some(
+      (name) =>
+        name !== 'objects' &&
+        name !== KEYCHECK_NAME &&
+        (name.startsWith('d1.') || /^[A-Za-z0-9_-]+$/.test(name)),
+    )
+  ) {
+    throw new Error('Flat or mixed backup layout: encoded files must be in objects/.');
+  }
+  checkAncestors(outputDir);
+  if (existsSync(outputDir) && readdirSync(outputDir).length > 0) {
+    throw new Error('Restore into a new or empty output directory to avoid overwriting files.');
+  }
+  const entries = readdirSync(objectsDir).filter((name) =>
+    lstatSync(join(objectsDir, name)).isFile(),
   );
+
+  // Validate every name and collision before writing the first file.
+  const paths = new Map();
+  const occupied = new Set();
+  for (const name of entries) {
+    if (name === KEYCHECK_NAME || name === DICTIONARY_NAME || name === DICTIONARY_BACKUP_NAME)
+      continue;
+    if (name.startsWith('d1.')) throw new Error('Unsupported prefixed object name.');
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
+    const path = decodeDriveName(name, dictionary);
+    const folded = path.toLowerCase();
+    if (occupied.has(folded)) throw new Error(`Duplicate or case-colliding path: ${path}`);
+    occupied.add(folded);
+    paths.set(name, path);
+  }
+  for (const path of occupied) {
+    const parts = path.split('/');
+    parts.pop();
+    while (parts.length > 0) {
+      if (occupied.has(parts.join('/'))) throw new Error(`File/directory collision: ${path}`);
+      parts.pop();
+    }
+  }
 
   let passphrase = null;
   let restored = 0;
@@ -277,26 +432,27 @@ async function decryptDirectory(inputDir, outputDir, flags) {
   let skipped = 0;
 
   for (const name of entries) {
-    if (name === KEYCHECK_NAME) continue;
+    if (name === KEYCHECK_NAME || name === DICTIONARY_NAME || name === DICTIONARY_BACKUP_NAME)
+      continue;
 
-    const path = decodeDriveName(name);
-    if (path === null) {
-      console.error(`skip  ${name} (name is not an encoded vault path)`);
+    const path = paths.get(name);
+    if (path === undefined) {
+      console.error(`skip  ${name} (not an encoded path name)`);
       skipped += 1;
       continue;
     }
 
-    const bytes = new Uint8Array(readFileSync(join(resolve(inputDir), name)));
+    const bytes = new Uint8Array(readFileSync(join(objectsDir, name)));
     const target = join(resolve(outputDir), path);
     mkdirSync(dirname(target), { recursive: true });
 
     if (isContainer(bytes)) {
       passphrase ??= await resolvePassphrase(flags);
-      writeFileSync(target, await openContainer(bytes, passphrase));
+      writeFileSync(target, await openContainer(bytes, passphrase), { flag: 'wx' });
       console.error(`open  ${path}`);
       restored += 1;
     } else {
-      writeFileSync(target, bytes);
+      writeFileSync(target, bytes, { flag: 'wx' });
       console.error(`copy  ${path}`);
       copied += 1;
     }

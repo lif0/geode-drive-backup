@@ -15,6 +15,13 @@ function optionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === 'string';
 }
 
+/** files.generateIds response; IDs make retried dictionary creation idempotent. */
+export function generatedFileId(value: unknown): string | null {
+  if (!isRecord(value) || !Array.isArray(value['ids'])) return null;
+  const first: unknown = value['ids'][0];
+  return typeof first === 'string' && first.length > 0 ? first : null;
+}
+
 /* ------------------------------- Drive files ------------------------------ */
 
 /** One entry from `files.list`, limited to the fields Geode requests. */

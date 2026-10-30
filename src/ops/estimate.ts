@@ -7,6 +7,8 @@ import { ok } from '../types';
 import { resolveFolder } from './folder';
 import type { PushDeps } from './push';
 import { collectLocalFiles, loadIgnoreRules } from './push';
+import { checkEncodedPath } from '../core/path-codec';
+import { dictionaryFor } from './path-dictionary';
 
 /**
  * A dry run: what a push would do, and whether Drive has room for it.
@@ -91,6 +93,8 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
 
   const listing = await deps.drive.listFolder(folderId.value);
   if (!listing.ok) return listing;
+  const dictionary = dictionaryFor(deps.settings, folderId.value, listing.value);
+  if (!dictionary.ok) return dictionary;
 
   const ignore = await loadIgnoreRules(deps);
   const collected = await collectLocalFiles(deps, ignore);
@@ -104,6 +108,12 @@ export async function estimateBackup(deps: PushDeps): Promise<Result<BackupEstim
   });
 
   const sizeOf = new Map(collected.value.files.map((file) => [file.path, file.size]));
+  for (const action of plan.actions) {
+    if (action.type === 'upload' || action.type === 'move-remote') {
+      const checked = checkEncodedPath(action.path, dictionary.value);
+      if (!checked.ok) return checked;
+    }
+  }
 
   // Counted in one walk rather than with a filter per field.
   const counters = {

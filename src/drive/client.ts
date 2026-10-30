@@ -1,9 +1,17 @@
 import { requestUrl } from 'obsidian';
 import type { RequestUrlResponse } from 'obsidian';
 
-import { concatBytes, toArrayBuffer, toHex, utf8Encode } from '../core/bytes';
+import { concatBytes, toArrayBuffer, toHex, utf8Encode, utf8Decode } from '../core/bytes';
 import { KEYCHECK_NAME } from '../core/container';
 import { decodePath } from '../core/path-codec';
+import type { PathDictionary } from '../core/path-dictionary';
+import {
+  DICTIONARY_NAME,
+  DICTIONARY_BACKUP_NAME,
+  MAX_DICTIONARY_BYTES,
+  readDictionary,
+  emptyDictionary,
+} from '../core/path-dictionary';
 import type {
   Bytes,
   CancellationToken,
@@ -14,11 +22,22 @@ import type {
   Result,
   VaultPath,
 } from '../types';
-import { cancelledError, driveFileId, driveName, err, networkError, ok, vaultPath } from '../types';
+import {
+  cancelledError,
+  driveFileId,
+  driveName,
+  err,
+  ioError,
+  isValidDriveName,
+  networkError,
+  ok,
+  vaultPath,
+} from '../types';
 import type { AuthProvider } from './auth-provider';
 import type { DriveFileDto } from './dto';
 import {
   describeErrorBody,
+  generatedFileId,
   driveErrorReasons,
   isDriveAboutDto,
   isDriveFileDto,
@@ -29,16 +48,16 @@ import {
 /**
  * Google Drive REST v3, limited to what a backup needs.
  *
- * Storage is flat: one folder, one Drive file per vault file, path carried in
- * the file name. No folder hierarchy is mirrored, so there is no tree to keep in
- * sync and no half-created folders to clean up after a failed run.
+ * The backup root holds service files; its objects/ child holds one Drive file
+ * per vault file. Vault paths are encoded in names, without mirroring their tree.
  */
 
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 const DRIVE_ABOUT = 'https://www.googleapis.com/drive/v3/about';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
-const FILE_FIELDS = 'id,name,md5Checksum,modifiedTime,size,appProperties';
+const FILE_FIELDS = 'id,name,mimeType,md5Checksum,modifiedTime,size,appProperties';
+export const OBJECTS_FOLDER_NAME = 'objects';
 const FOLDER_FIELDS = 'id,name,mimeType,trashed';
 const PAGE_SIZE = 1000;
 
@@ -181,7 +200,7 @@ function newerOf(a: RemoteFile, b: RemoteFile): RemoteFile {
 /** appProperties Geode writes. The path is NOT among them — it would overflow. */
 export interface GeodeAppProperties {
   /** Format version of the Drive-side layout. */
-  readonly v: '1';
+  readonly v: '1' | '2';
   /** Advisory encryption flag. The container MAGIC is what actually decides. */
   readonly enc: '0' | '1';
 }
@@ -196,6 +215,10 @@ export interface DriveQuota {
 
 /** What one folder listing produced. */
 export interface FolderListing {
+  readonly objectsFolderId: DriveFileId | null;
+  readonly dictionary: PathDictionary | null;
+  readonly dictionaryId: DriveFileId | null;
+  readonly dictionaryBackupId: DriveFileId | null;
   /** Files whose names decoded to a usable vault path. One per path. */
   readonly files: readonly RemoteFile[];
   /** The passphrase check file, if the folder has one. */
@@ -217,14 +240,11 @@ function buildUrl(base: string, params: Record<string, string>): string {
   return `${base}?${query}`;
 }
 
-function toRemoteFile(dto: DriveFileDto): RemoteFile | null {
-  const path = decodePath(dto.name);
-  if (!path.ok) return null;
-
+function toRemoteFile(dto: DriveFileDto, path: VaultPath): RemoteFile {
   return {
     id: driveFileId(dto.id),
     name: driveName(dto.name),
-    path: path.value,
+    path,
     md5: dto.md5Checksum ?? '',
     modifiedTime: dto.modifiedTime ?? '',
     size: Number.parseInt(dto.size ?? '0', 10) || 0,
@@ -479,11 +499,8 @@ export class DriveClient {
    * A partial listing would look like a set of deleted files, so a failure on
    * any page fails the whole call rather than returning what it has.
    */
-  async listFolder(folderId: DriveFileId): Promise<Result<FolderListing>> {
-    const byPath = new Map<string, RemoteFile>();
-    const ignored: string[] = [];
-    const duplicates = new Set<string>();
-    let keycheckId: DriveFileId | null = null;
+  private async listChildren(folderId: DriveFileId): Promise<Result<readonly DriveFileDto[]>> {
+    const entries: DriveFileDto[] = [];
     let pageToken: string | undefined;
 
     do {
@@ -506,36 +523,143 @@ export class DriveClient {
         return err(networkError('Drive returned a file listing Geode could not read.'));
       }
 
-      for (const dto of body.files ?? []) {
-        if (dto.name === KEYCHECK_NAME) {
-          keycheckId = driveFileId(dto.id);
-          continue;
-        }
-        const file = toRemoteFile(dto);
-        if (file === null) {
-          ignored.push(dto.name);
-          continue;
-        }
-
-        // Drive has no unique-name constraint, so one vault path can end up
-        // held by two files: two devices created the same note in the same
-        // minute, someone copied it in the web UI, or an upload landed and only
-        // its response was lost. Keeping the last one seen would make that
-        // choice depend on page order and hide the other copy completely, which
-        // for a backup means a note that is on Drive and is never restored.
-        const rival = byPath.get(file.path);
-        if (rival === undefined) {
-          byPath.set(file.path, file);
-          continue;
-        }
-        byPath.set(file.path, newerOf(rival, file));
-        duplicates.add(file.path);
-      }
+      entries.push(...(body.files ?? []));
 
       pageToken = body.nextPageToken;
     } while (pageToken !== undefined && pageToken.length > 0);
 
+    return ok(entries);
+  }
+
+  /** Read service files from the root and data files only from objects/. */
+  async listFolder(folderId: DriveFileId): Promise<Result<FolderListing>> {
+    const root = await this.listChildren(folderId);
+    if (!root.ok) return root;
+    const entries = root.value;
+    const byPath = new Map<string, RemoteFile>();
+    const ignored: string[] = [];
+    const duplicates = new Set<string>();
+    let keycheckId: DriveFileId | null = null;
+    const objectFolders = entries.filter((file) => file.name === OBJECTS_FOLDER_NAME);
+    if (
+      objectFolders.length > 1 ||
+      (objectFolders[0] !== undefined && objectFolders[0].mimeType !== FOLDER_MIME)
+    ) {
+      return err(
+        ioError(
+          'Expected one objects folder. Resolve duplicate folders or the conflicting file before continuing.',
+        ),
+      );
+    }
+    const objectsFolderId =
+      objectFolders[0] === undefined ? null : driveFileId(objectFolders[0].id);
+
+    const dictionaries = entries.filter((file) => file.name === DICTIONARY_NAME);
+    const backups = entries.filter((file) => file.name === DICTIONARY_BACKUP_NAME);
+    if (dictionaries.length > 1 || backups.length > 1) {
+      return err(
+        ioError('Multiple path dictionaries found. Resolve the duplicates before continuing.'),
+      );
+    }
+    for (const dto of entries) {
+      if (
+        dto.name === DICTIONARY_NAME ||
+        dto.name === DICTIONARY_BACKUP_NAME ||
+        dto.name === OBJECTS_FOLDER_NAME
+      )
+        continue;
+      if (dto.name === KEYCHECK_NAME) {
+        keycheckId = driveFileId(dto.id);
+        continue;
+      }
+      if (
+        dto.name.startsWith('d1.') ||
+        dto.appProperties?.['v'] === '1' ||
+        dto.appProperties?.['v'] === '2' ||
+        isValidDriveName(dto.name)
+      ) {
+        return err(
+          ioError(
+            'Flat backup layout found. Choose a new empty Drive folder; files now belong in objects/.',
+          ),
+        );
+      }
+      ignored.push(dto.name);
+    }
+    if (objectsFolderId === null && (dictionaries.length > 0 || backups.length > 0)) {
+      return err(
+        ioError('Missing objects folder in an existing backup. Restore it before continuing.'),
+      );
+    }
+    const objects =
+      objectsFolderId === null
+        ? ok<readonly DriveFileDto[]>([])
+        : await this.listChildren(objectsFolderId);
+    if (!objects.ok) return objects;
+    const dictionaryFile = dictionaries[0];
+    let dictionary: PathDictionary | null = null;
+    if (dictionaryFile !== undefined) {
+      if (Number(dictionaryFile.size ?? 0) > MAX_DICTIONARY_BYTES)
+        return err(ioError('Path dictionary is too large.'));
+      const downloaded = await this.download(driveFileId(dictionaryFile.id));
+      if (!downloaded.ok) return downloaded;
+      if (downloaded.value.length > MAX_DICTIONARY_BYTES)
+        return err(ioError('Path dictionary is too large.'));
+      const text = utf8Decode(downloaded.value);
+      const encoded = utf8Encode(text);
+      if (
+        encoded.length !== downloaded.value.length ||
+        !encoded.every((byte, index) => byte === downloaded.value[index])
+      ) {
+        return err(ioError('Path dictionary is not valid UTF-8.'));
+      }
+      const parsed = readDictionary(parseJson(text));
+      if (!parsed.ok) return parsed;
+      dictionary = parsed.value;
+    } else if (
+      backups.length > 0 ||
+      objects.value.some((file) => isValidDriveName(file.name) || file.name.startsWith('d1.'))
+    ) {
+      return err(
+        ioError(
+          `Missing ${DICTIONARY_NAME}. Restore it before continuing; the backup is not empty.`,
+        ),
+      );
+    }
+
+    for (const dto of objects.value) {
+      if (dto.name.startsWith('d1.'))
+        return err(
+          ioError(
+            'Unsupported prefixed object name. Use a new backup folder for the current format.',
+          ),
+        );
+      if (!isValidDriveName(dto.name)) {
+        // No automatic migration: never mix a legacy Geode backup with this format.
+        if (dto.appProperties?.['v'] === '1')
+          return err(
+            ioError(
+              'Legacy backup found. Choose a new empty Drive folder for dictionary encoding.',
+            ),
+          );
+        ignored.push(`${OBJECTS_FOLDER_NAME}/${dto.name}`);
+        continue;
+      }
+      if (dto.mimeType === FOLDER_MIME)
+        return err(ioError('An encoded object is a folder, not a backup file.'));
+      const path = decodePath(dto.name, dictionary ?? emptyDictionary());
+      if (!path.ok) return path;
+      const file = toRemoteFile(dto, path.value);
+      const rival = byPath.get(file.path);
+      byPath.set(file.path, rival === undefined ? file : newerOf(rival, file));
+      if (rival !== undefined) duplicates.add(file.path);
+    }
+
     return ok({
+      objectsFolderId,
+      dictionary,
+      dictionaryId: dictionaryFile === undefined ? null : driveFileId(dictionaryFile.id),
+      dictionaryBackupId: backups[0] === undefined ? null : driveFileId(backups[0].id),
       files: [...byPath.values()],
       keycheckId,
       ignored,
@@ -730,6 +854,78 @@ export class DriveClient {
     // Every chunk was accepted and none of them was the one that finishes the
     // upload. Nothing was necessarily lost, but nothing is confirmed either.
     return err(networkError(`${what} ended without Drive confirming the file.`));
+  }
+
+  private async allocateFileId(): Promise<Result<DriveFileId>> {
+    const generated = await this.send({
+      url: buildUrl(`${DRIVE_FILES}/generateIds`, { count: '1', space: 'drive', type: 'files' }),
+      method: 'GET',
+    });
+    if (!generated.ok) return generated;
+    if (generated.value.status < 200 || generated.value.status >= 300) {
+      return DriveClient.failure(generated.value, 'Allocating a Drive ID');
+    }
+    const id = generatedFileId(parseJson(generated.value.text));
+    return id === null
+      ? err(networkError('Drive returned an invalid file ID.'))
+      : ok(driveFileId(id));
+  }
+
+  /** Only Push creates this directory, after validating the entire plan. */
+  async createObjectsFolder(rootId: DriveFileId): Promise<Result<DriveFileId>> {
+    const id = await this.allocateFileId();
+    if (!id.ok) return id;
+    const created = await this.sendForFile(
+      {
+        url: buildUrl(DRIVE_FILES, { fields: FOLDER_FIELDS }),
+        method: 'POST',
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: id.value,
+          name: OBJECTS_FOLDER_NAME,
+          mimeType: FOLDER_MIME,
+          parents: [rootId],
+        }),
+      },
+      'Creating the objects folder',
+    );
+    return created.ok ? id : created;
+  }
+
+  /** Called before any file can reference a new rule. Keeps a previous copy separately. */
+  async writeDictionary(
+    folderId: DriveFileId,
+    existingId: DriveFileId | null,
+    content: Bytes,
+    backup: boolean,
+  ): Promise<Result<DriveFileId>> {
+    if (existingId !== null) {
+      const updated = await this.updateContent(existingId, content);
+      return updated.ok ? ok(existingId) : updated;
+    }
+    const id = await this.allocateFileId();
+    if (!id.ok) return id;
+    const { body, contentType } = this.buildMultipart(
+      {
+        id: id.value,
+        name: backup ? DICTIONARY_BACKUP_NAME : DICTIONARY_NAME,
+        parents: [folderId],
+        mimeType: 'application/json',
+      },
+      content,
+    );
+    const created = await this.sendForFile(
+      {
+        url: buildUrl(DRIVE_UPLOAD, { uploadType: 'multipart', fields: FILE_FIELDS }),
+        method: 'POST',
+        contentType,
+        body,
+      },
+      'Saving the path dictionary',
+    );
+    // If a successful response was lost, a retry can return 409. Stop this push;
+    // the next listing discovers the already-created file without making a duplicate.
+    return created.ok ? id : created;
   }
 
   /** Creates a new file in the folder. */

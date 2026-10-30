@@ -6,6 +6,9 @@ import type { ExclusionPreview } from '../ops/estimate';
 import type { GeodeSettings } from '../settings';
 import { formatPrefixList, parsePrefixList } from '../core/selector';
 import { BADGE_LEGEND } from './file-badges';
+import { addDictionaryRule, DICTIONARY_NAME } from '../core/path-dictionary';
+import { checkEncodedPath, encodePath, MAX_DRIVE_NAME_LENGTH } from '../core/path-codec';
+import { isValidVaultPath, vaultPath } from '../types';
 
 /**
  * The settings tab.
@@ -78,6 +81,7 @@ export class GeodeSettingTab extends PluginSettingTab {
     this.renderActions(containerEl);
     this.renderAccount(containerEl);
     this.renderStorage(containerEl);
+    this.renderPathDictionary(containerEl);
     this.renderExclusions(containerEl);
     this.renderEncryption(containerEl);
     this.renderDeletions(containerEl);
@@ -217,7 +221,7 @@ export class GeodeSettingTab extends PluginSettingTab {
     new Setting(root)
       .setName('Drive folder name')
       .setDesc(
-        'One flat folder holds the whole backup. Changing this after a push points Geode at a ' +
+        'The backup folder holds the dictionary and an objects subfolder for files. Changing it after a push points Geode at a ' +
           'different folder and it will upload everything again.',
       )
       .addText((text) =>
@@ -235,6 +239,94 @@ export class GeodeSettingTab extends PluginSettingTab {
             await this.host.saveSettings();
           }),
       );
+  }
+
+  private renderPathDictionary(root: HTMLElement): void {
+    new Setting(root).setName('File name replacements').setHeading();
+    root.createEl('p', {
+      text:
+        'Exact, case-sensitive replacements shorten paths before base64 encoding. The longest match wins; literal braces are escaped automatically. ' +
+        `Download ${DICTIONARY_NAME} with your backup. Use one writing device. New rules are published on the next Push; existing files keep their names until moved.`,
+    });
+    if (this.settings.pathDictionaryError !== null) {
+      root.createEl('p', {
+        text: `Dictionary error: ${this.settings.pathDictionaryError}. Repair the stored dictionary before continuing.`,
+      });
+      return;
+    }
+    for (const rule of this.settings.pathDictionary.rules) {
+      new Setting(root)
+        .setName(`{${String(rule.id)}} → ${rule.text}`)
+        .setDesc(
+          'The ID and text are permanent. Disabling affects new names only; old names can still be restored.',
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(rule.enabled)
+            .setDisabled(this.host.isBusy())
+            .onChange(async (enabled) => {
+              if (this.host.isBusy()) return;
+              this.settings.pathDictionary = {
+                version: 1,
+                rules: this.settings.pathDictionary.rules.map((item) =>
+                  item.id === rule.id ? { ...item, enabled } : item,
+                ),
+              };
+              await this.host.saveSettings();
+            }),
+        );
+    }
+    let fragment = '';
+    const add = new Setting(root)
+      .setName('Add replacement')
+      .setDesc(
+        'Enter a literal fragment, for example Data Structures or algocode.io. Spaces are significant. IDs are assigned automatically.',
+      )
+      .addText((input) =>
+        input
+          .setPlaceholder('Data Structures')
+          .setDisabled(this.host.isBusy())
+          .onChange((value) => {
+            fragment = value;
+          }),
+      );
+    add.addButton((button) =>
+      button
+        .setButtonText('Add rule')
+        .setDisabled(this.host.isBusy())
+        .onClick(async () => {
+          if (this.host.isBusy()) return;
+          const next = addDictionaryRule(this.settings.pathDictionary, fragment);
+          if (!next.ok) {
+            add.setDesc(next.error.message);
+            return;
+          }
+          this.settings.pathDictionary = next.value;
+          await this.host.saveSettings();
+          this.refresh();
+        }),
+    );
+    const preview = new Setting(root)
+      .setName('Preview a path')
+      .setDesc(
+        `Paste a vault-relative path to check its encoded name. Limit: ${String(MAX_DRIVE_NAME_LENGTH)} ASCII characters.`,
+      );
+    preview.addText((input) =>
+      input.setPlaceholder('Notes/example.md').onChange((value) => {
+        if (!isValidVaultPath(value)) {
+          preview.setDesc('Enter a valid vault-relative file path.');
+          return;
+        }
+        const path = vaultPath(value);
+        const encoded = encodePath(path, this.settings.pathDictionary);
+        const checked = checkEncodedPath(path, this.settings.pathDictionary);
+        preview.setDesc(
+          checked.ok
+            ? `${String(encoded.length)} / ${String(MAX_DRIVE_NAME_LENGTH)} characters: ${encoded}`
+            : checked.error.message,
+        );
+      }),
+    );
   }
 
   private renderExclusions(root: HTMLElement): void {

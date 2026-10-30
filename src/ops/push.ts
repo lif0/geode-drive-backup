@@ -4,7 +4,9 @@ import { planPush } from '../core/diff';
 import type { IgnoreRules } from '../core/ignore';
 import { isIgnored, parseIgnore } from '../core/ignore';
 import type { KeyCache } from '../core/kdf';
-import { encodePath } from '../core/path-codec';
+import { checkEncodedPath, encodePath } from '../core/path-codec';
+import type { PathDictionary } from '../core/path-dictionary';
+import { dictionaryFor, publishDictionary } from './path-dictionary';
 import type { DriveClient, GeodeAppProperties } from '../drive/client';
 import type { GeodeSettings } from '../settings';
 import type {
@@ -35,6 +37,7 @@ import type { IndexStore } from './index-store';
 
 /** Everything push needs from the outside. */
 export interface PushDeps {
+  readonly rememberDictionary: (dictionary: PathDictionary, folderId: DriveFileId) => Promise<void>;
   readonly vault: VaultIo;
   readonly drive: DriveClient;
   readonly crypto: CryptoProvider;
@@ -99,7 +102,7 @@ interface Counters {
 }
 
 function properties(encrypted: boolean): GeodeAppProperties {
-  return { v: '1', enc: encrypted ? '1' : '0' };
+  return { v: '2', enc: encrypted ? '1' : '0' };
 }
 
 /** `mtime` if it is old enough to be evidence, else `-1`: "always re-read". */
@@ -270,6 +273,8 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
 
   const listing = await deps.drive.listFolder(folderId.value);
   if (!listing.ok) return listing;
+  const dictionary = dictionaryFor(deps.settings, folderId.value, listing.value);
+  if (!dictionary.ok) return dictionary;
 
   const ignore = await loadIgnoreRules(deps);
 
@@ -284,11 +289,29 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
     ignore,
   });
 
+  for (const action of plan.actions) {
+    if (action.type === 'upload' || action.type === 'move-remote') {
+      const checked = checkEncodedPath(action.path, dictionary.value);
+      if (!checked.ok) return checked;
+    }
+  }
+
   const needsKey = plan.actions.some(
     (action) => (action.type === 'upload' || action.type === 'update') && action.encrypt,
   );
+  if (deps.cancellation.isCancelled())
+    return err(cancelledError('Push cancelled before creating the objects folder.'));
+  const objectsFolder =
+    listing.value.objectsFolderId === null
+      ? await deps.drive.createObjectsFolder(folderId.value)
+      : ok(listing.value.objectsFolderId);
+  if (!objectsFolder.ok) return objectsFolder;
   const salt = await unlockIfNeeded(deps, folderId.value, listing.value.keycheckId, needsKey);
   if (!salt.ok) return salt;
+  if (deps.cancellation.isCancelled())
+    return err(cancelledError('Push cancelled before publishing the dictionary.'));
+  const published = await publishDictionary(deps, folderId.value, listing.value, dictionary.value);
+  if (!published.ok) return published;
 
   const localByPath = new Map<string, LocalFile>(localFiles.map((f) => [f.path, f]));
   const remoteByPath = new Map<string, RemoteFile>(listing.value.files.map((f) => [f.path, f]));
@@ -322,7 +345,8 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
     }
 
     const outcome = await applyAction(deps, action, {
-      folderId: folderId.value,
+      objectsFolderId: objectsFolder.value,
+      dictionary: dictionary.value,
       salt: salt.value,
       localByPath,
       remoteByPath,
@@ -381,7 +405,8 @@ export async function runPush(deps: PushDeps): Promise<Result<OperationSummary>>
 }
 
 interface ActionContext {
-  readonly folderId: DriveFileId;
+  readonly dictionary: PathDictionary;
+  readonly objectsFolderId: DriveFileId;
   readonly salt: Bytes | null;
   readonly localByPath: ReadonlyMap<string, LocalFile>;
   readonly remoteByPath: ReadonlyMap<string, RemoteFile>;
@@ -442,7 +467,10 @@ async function applyAction(
       const file = context.localByPath.get(action.path);
       if (entry === undefined || file === undefined) return ok(undefined);
 
-      const renamed = await deps.drive.renameFile(action.fileId, encodePath(action.path));
+      const renamed = await deps.drive.renameFile(
+        action.fileId,
+        encodePath(action.path, context.dictionary),
+      );
       if (!renamed.ok) return renamed;
 
       // The entry moves whole. Same bytes, same file id, and the same md5 —
@@ -490,8 +518,8 @@ async function applyAction(
 
       if (action.type === 'upload') {
         const uploaded = await deps.drive.upload(
-          context.folderId,
-          encodePath(action.path),
+          context.objectsFolderId,
+          encodePath(action.path, context.dictionary),
           content.value,
           properties(action.encrypt),
           onProgress,

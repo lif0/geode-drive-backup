@@ -7,6 +7,8 @@
 
 import type { RunOutcome, RunRecord } from './core/history';
 import { HISTORY_LIMIT } from './core/history';
+import type { PathDictionary } from './core/path-dictionary';
+import { emptyDictionary, readDictionary } from './core/path-dictionary';
 
 /** When Geode asks for the encryption passphrase. */
 export type PassphrasePrompt = 'once-per-session' | 'every-operation';
@@ -34,6 +36,11 @@ export interface GeodeSettings {
   folderName: string;
   /** Cached id of the Drive app folder, so we do not search for it every run. */
   folderId: string | null;
+  pathDictionary: PathDictionary;
+  /** Keep invalid stored data visible and block operations rather than silently resetting it. */
+  pathDictionaryError: string | null;
+  /** A missing dictionary in a previously initialized folder is data loss, not first use. */
+  dictionaryFolderId: string | null;
   /**
    * Read the vault's own root `.gitignore` and skip what it excludes.
    *
@@ -71,6 +78,9 @@ export const DEFAULT_SETTINGS = {
   authFlow: 'device',
   folderName: 'GeodeDrive',
   folderId: null,
+  pathDictionary: emptyDictionary(),
+  pathDictionaryError: null,
+  dictionaryFolderId: null,
   useGitignore: false,
   excludedPaths: [],
   showFileBadges: true,
@@ -179,6 +189,7 @@ function readHistory(source: Record<string, unknown>, key: string): RunRecord[] 
 export function defaultSettings(): GeodeSettings {
   return {
     ...DEFAULT_SETTINGS,
+    pathDictionary: emptyDictionary(),
     excludedPaths: [],
     encryptedPrefixes: [],
     index: {},
@@ -205,6 +216,9 @@ export function migrateSettings(raw: unknown): GeodeSettings {
     promptRaw === 'every-operation' ? 'every-operation' : 'once-per-session';
 
   const folderName = readString(raw, 'folderName', DEFAULT_SETTINGS.folderName);
+  const dictionary = readDictionary(
+    raw['pathDictionary'] === undefined ? emptyDictionary() : raw['pathDictionary'],
+  );
 
   return {
     clientId: readString(raw, 'clientId', '').trim(),
@@ -213,6 +227,11 @@ export function migrateSettings(raw: unknown): GeodeSettings {
     authFlow,
     folderName: folderName.trim().length > 0 ? folderName.trim() : DEFAULT_SETTINGS.folderName,
     folderId: readNullableString(raw, 'folderId'),
+    pathDictionary: dictionary.ok ? dictionary.value : emptyDictionary(),
+    pathDictionaryError: dictionary.ok
+      ? readNullableString(raw, 'pathDictionaryError')
+      : dictionary.error.message,
+    dictionaryFolderId: readNullableString(raw, 'dictionaryFolderId'),
     useGitignore: readBoolean(raw, 'useGitignore', false),
     excludedPaths: readStringArray(raw, 'excludedPaths'),
     showFileBadges: readBoolean(raw, 'showFileBadges', true),

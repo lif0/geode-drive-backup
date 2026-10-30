@@ -1,6 +1,6 @@
 {
   "name": "geode-drive-backup",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Backup, not sync. Push your Obsidian vault to Google Drive and pull it back on a new device, with optional client-side encryption.",
   "private": true,
   "license": "Apache-2.0",
